@@ -1,0 +1,14 @@
+# values.yaml
+testType: "default"  # Allowed values: "default", "bandwidth", "memory"
+
+bandwidth: "5M"      # Default bandwidth value
+
+memory:
+  requests: "120Mi"  # Default memory requests
+  limits: "150Mi"    # Default memory limits
+
+image:
+  name: wwiras/simcl
+  tag: v1 # (direct mail from k8sv2)
+
+totalNodes: 10       # Default value, can be overridden

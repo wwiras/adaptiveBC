@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package gossip;
+import "google/protobuf/empty.proto"; // <-- Add this import
+
+// In gossip.proto
+message GossipMessage {
+  string message = 1;
+  string sender_id = 2;
+  int64 timestamp = 3;
+  double latency_ms = 4;
+  int32 round_count = 5; // <-- Add this field
+}
+
+message Acknowledgment {
+  string details = 1;
+}
+
+service GossipService {
+  rpc SendMessage (GossipMessage) returns (Acknowledgment);
+  rpc UpdateNeighbors (google.protobuf.Empty) returns (Acknowledgment); // <-- Add this new RPC
+}

@@ -1,0 +1,35 @@
+FROM ubuntu:22.04
+
+# Set the working directory inside the container
+WORKDIR /app
+
+# Install all required packages in a single, clean RUN layer
+# This ensures that apt-get update is fresh for all subsequent installs
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    build-essential \
+    wget \
+    iputils-ping \
+    dnsutils \
+    iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy your application source code and proto file into the image
+COPY . /app
+
+# Install Python packages, including grpcio-tools for compilation
+RUN pip3 install --no-cache-dir grpcio grpcio-tools kubernetes
+
+# --- Protobuf Compilation Step ---
+#RUN mkdir -p /app/google/protobuf && \
+#    wget -O /app/google/protobuf/empty.proto https://raw.githubusercontent.com/protocolbuffers/protobuf/main/src/google/protobuf/empty.proto && \
+#    python3 -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. gossip.proto
+
+# Expose the port the app runs on
+EXPOSE 5050
+
+# Command to run the application
+CMD ["python3", "node_asyncio.py"]
+#CMD ["python3", "node_asyncio2.py"]
+# CMD ["python3", "node_asyncio3.py"]
