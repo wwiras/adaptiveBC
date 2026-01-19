@@ -5,7 +5,44 @@ import subprocess
 import sys
 import os
 import time
+import random  # Added for jitter in retries
 
+# --- HELPER: Robust Command Execution ---
+def run_command_with_retry(cmd, timeout=300, retries=5, backoff=1.5):
+    """
+    Executes a subprocess command with retries, exponential backoff, and random jitter.
+    This handles transient 'Connection refused' errors from the K8s API server.
+    """
+    last_error = ""
+    
+    for attempt in range(retries):
+        try:
+            # Run the command
+            result = subprocess.run(
+                cmd, check=True, text=True, capture_output=True, timeout=timeout
+            )
+            return True, result.stdout.strip()
+
+        except subprocess.CalledProcessError as e:
+            # Capture error (e.g., Connection Refused, Exit 1)
+            last_error = f"Exit {e.returncode}: {e.stderr.strip()}"
+        except subprocess.TimeoutExpired:
+            last_error = f"Timed out after {timeout}s"
+        except Exception as e:
+            last_error = f"Unexpected error: {str(e)}"
+
+        # If we are here, the attempt failed. Wait before retrying.
+        # Formula: (Backoff ^ Attempt) + Random Jitter (0.5 - 1.5s)
+        # This prevents "thundering herd" where all threads retry at once.
+        if attempt < retries - 1:
+            sleep_time = (backoff ** attempt) + random.uniform(0.5, 1.5)
+            # print(f"   [Retry] Retrying in {sleep_time:.2f}s due to: {last_error[:100]}...", flush=True) # Optional debug
+            time.sleep(sleep_time)
+
+    # If all retries fail
+    return False, f"Failed after {retries} attempts. Last error: {last_error}"
+
+# --- CORE FUNCTIONS ---
 
 def get_pod_topology(topology_folder, filename):
     """
@@ -49,6 +86,7 @@ def get_pod_neighbors(topology):
 def get_pod_dplymt():
     """
     Fetches [(index, pod_name, pod_ip)] from Kubernetes or returns False on failure.
+    Uses retries implicitly via subprocess (though simple read usually safe, added basic retry here could be good too).
     """
     cmd = [
         'kubectl',
@@ -138,13 +176,14 @@ def get_num_nodes(namespace='default'):
 def update_pod_neighbors(pod, neighbors, timeout=300):
     """
     Atomically updates neighbor list (IP and weight) in a pod's SQLite DB.
-    Returns (success: bool, output: str) tuple in ALL cases.
+    Uses robust retry logic.
     """
-    try:
-        neighbors_json = json.dumps(neighbors)
-        python_script = f"""
+    neighbors_json = json.dumps(neighbors)
+    # We use sys.exit(1) inside python script to ensure subprocess sees failure
+    python_script = f"""
 import sqlite3
 import json
+import sys
 try:
     values_from_json = json.loads('{neighbors_json.replace("'", "\\'")}')
     with sqlite3.connect('ned.db') as conn:
@@ -153,79 +192,54 @@ try:
         conn.execute('CREATE TABLE NEIGHBORS (pod_ip TEXT PRIMARY KEY, weight REAL)')
         conn.executemany('INSERT INTO NEIGHBORS VALUES (?, ?)', values_from_json)
         conn.commit()
-    print(f"Updated {{len(values_from_json)}} neighbors with IP and Weight")
+    print(f"Updated {{len(values_from_json)}} neighbors")
 except Exception as e:
-    print(f"Error: {{str(e)}}")
-    raise
+    print(f"Error: {{str(e)}}", file=sys.stderr)
+    sys.exit(1)
 """
-        cmd = [
-            'kubectl', 'exec', pod,
-            '--', 'python3', '-c', python_script
-        ]
-        result = subprocess.run(cmd, check=True, text=True, capture_output=True, timeout=timeout)
-        return True, result.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        return False, f"Command failed (exit {e.returncode}): {e.stderr.strip()}"
-    except subprocess.TimeoutExpired:
-        return False, f"Command timed out after {timeout} seconds"
-    except Exception as e:
-        return False, f"Unexpected error in update_pod_neighbors: {str(e)}"
+    cmd = [
+        'kubectl', 'exec', pod,
+        '--', 'python3', '-c', python_script
+    ]
+    
+    return run_command_with_retry(cmd, timeout=timeout, retries=5)
 
-
-# def notify_pod_for_update2(pod_ip, timeout=5):
-#     """
-#     Makes a gRPC call to a pod to signal it to update its neighbor list.
-#     """
-#     try:
-#         with grpc.insecure_channel(f"{pod_ip}:5050", options=[('grpc.so_reuseport', 0)]) as channel:
-#             stub = gossip_pb2_grpc.GossipServiceStub(channel)
-#             stub.UpdateNeighbors(Empty(), timeout=timeout)
-#         return True, "Update signal sent successfully."
-#     except grpc.RpcError as e:
-#         return False, f"RPC call failed with code {e.code()}: {e.details()}"
-#     except Exception as e:
-#         return False, f"Unexpected error while sending update signal: {str(e)}"
 
 def notify_pod_for_update(pod_name):
     """
     Sends a signal to a pod via a kubectl exec command to trigger a neighbor list update.
-    This method avoids the host's gRPC dependencies.
+    Uses robust retry logic.
     """
-    # The python script to run inside the container
     python_script = """
 import grpc
 import gossip_pb2_grpc
+import sys
 from google.protobuf.empty_pb2 import Empty
 try:
     with grpc.insecure_channel('localhost:5050') as channel:
         stub = gossip_pb2_grpc.GossipServiceStub(channel)
         stub.UpdateNeighbors(Empty(), timeout=5)
-    print("UpdateNeighbors signal sent successfully to localhost:5050.")
+    print("UpdateNeighbors signal sent.")
 except grpc.RpcError as e:
-    print(f"Error sending signal: RPC failed with code {e.code()}")
+    print(f"RPC Error: {e.code()}", file=sys.stderr)
+    sys.exit(1)
 except Exception as e:
-    print(f"Error sending signal: {str(e)}")
+    print(f"Error: {str(e)}", file=sys.stderr)
+    sys.exit(1)
 """
     cmd = [
         'kubectl', 'exec', pod_name,
         '--', 'python3', '-c', python_script
     ]
 
-    try:
-        result = subprocess.run(cmd, check=True, text=True, capture_output=True, timeout=10)
-        return True, result.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        return False, f"Command failed (exit {e.returncode}): {e.stderr.strip()}"
-    except subprocess.TimeoutExpired:
-        return False, "Command timed out."
-    except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+    return run_command_with_retry(cmd, timeout=20, retries=5)
 
-def update_all_pods(pod_mapping, pod_dplymt, max_retries=3, initial_timeout=300, max_concurrent_updates=10):
+
+def update_all_pods(pod_mapping, pod_dplymt, max_retries=3, initial_timeout=300, max_concurrent_updates=50):
     """
     Performs a two-phase update on all pods with detailed progress monitoring.
-    1. Updates the SQLite DB in parallel for all pods.
-    2. Sends a gRPC notification in parallel to all updated pods.
+    Phase 1: DB Update
+    Phase 2: gRPC Notify
     """
     pod_list = list(pod_mapping.keys())
     total_pods = len(pod_list)
@@ -254,7 +268,7 @@ def update_all_pods(pod_mapping, pod_dplymt, max_retries=3, initial_timeout=300,
                 else:
                     print(f"\n  - DB update failed for {pod_name}: {output}", flush=True)
             except Exception as exc:
-                db_update_results[pod_name] = (False, f"Exception during DB update: {exc}")
+                db_update_results[pod_name] = (False, f"Exception: {exc}")
                 print(f"\n  - DB update failed for {pod_name} with exception: {exc}", flush=True)
 
             elapsed = time.time() - start_time
@@ -278,9 +292,7 @@ def update_all_pods(pod_mapping, pod_dplymt, max_retries=3, initial_timeout=300,
     pods_to_notify_count = len(pods_to_notify)
     print(f"\n[Phase 2: gRPC Notify] Starting notification for {pods_to_notify_count} pods...", flush=True)
     with ThreadPoolExecutor(max_workers=max_concurrent_updates) as executor:
-        pod_ip_map = {name: ip for _, name, ip in pod_dplymt}
         notify_futures = {
-            # executor.submit(notify_pod_for_update, pod_ip_map.get(pod_name)): pod_name
             executor.submit(notify_pod_for_update, pod_name): pod_name
             for pod_name in pods_to_notify
         }
@@ -297,7 +309,7 @@ def update_all_pods(pod_mapping, pod_dplymt, max_retries=3, initial_timeout=300,
                 else:
                     print(f"\n  - Notification failed for {pod_name}: {output}", flush=True)
             except Exception as exc:
-                notify_update_results[pod_name] = (False, f"Exception during notification: {exc}")
+                notify_update_results[pod_name] = (False, f"Exception: {exc}")
                 print(f"\n  - Notification failed for {pod_name} with exception: {exc}", flush=True)
 
             elapsed = time.time() - start_time
@@ -345,7 +357,8 @@ if __name__ == "__main__":
             pod_mapping = get_pod_mapping(nodes_dplymt_list, pod_neighbors, pod_topology)
 
             if pod_mapping:
-                if update_all_pods(pod_mapping, nodes_dplymt_list, max_concurrent_updates=20):
+                # Increased concurrency to 50 for speed, relying on retry logic for robustness
+                if update_all_pods(pod_mapping, nodes_dplymt_list, max_concurrent_updates=50):
                     prepare = True
             else:
                 print("Error: Could not create pod mapping.", flush=True)
