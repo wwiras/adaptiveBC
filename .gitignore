@@ -2,5 +2,6 @@
 __pycache__
 .DS_Store
 .idea
+*.log
 topology/
 topology_kmeans/
