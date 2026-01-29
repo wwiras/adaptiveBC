@@ -6,8 +6,8 @@ import logging
 # --- CONFIGURATION ---
 PROJECT_ID = "stoked-cosine-415611"
 ZONE = "us-central1-a"
-CLUSTER_NAME = "test-cluster-5"
 NODE_COUNT = 5
+CLUSTER_NAME = f"test-cluster-{NODE_COUNT}"
 
 # --- SETUP LOGGING (Screen + File) ---
 # This allows you to "cat experiment.log" to check status without opening tmux
