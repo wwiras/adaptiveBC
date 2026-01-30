@@ -5,7 +5,7 @@ import subprocess
 import uuid
 import logging
 import smtplib
-import re  # <--- Added for Regex
+import re
 from datetime import datetime
 from email.mime.text import MIMEText
 from google.cloud import bigquery
@@ -17,14 +17,15 @@ from google.cloud import bigquery
 PROJECT_ID = "stoked-cosine-415611"
 ZONE = "us-central1-c"
 K8SCLUSTER_NAME = "bcgossip-cluster"
-K8SNODE_COUNT = 5  # Physical nodes (ensure this is enough for your largest P2P test)
+K8SNODE_COUNT = 5  
 
 # Workload Settings (Helm/Pods)
 IMAGE_NAME = "wwiras/simcl2"
 IMAGE_TAG = "v14"
 BUCKET_NAME = "pulun-phd-experiments"
 TOPOLOGY_FOLDER = "topology"
-EXPERIMENT_DURATION = 20
+EXPERIMENT_DURATION = 100
+HELM_CHART_FOLDER = "simcl2" # <--- Name of the folder containing 'chartsim'
 
 # Email (Optional)
 GMAIL_USER = "your.email@gmail.com"
@@ -33,11 +34,18 @@ GMAIL_PASS = "xxxx xxxx xxxx xxxx"
 # ==========================================
 # 📝 LOGGING & UTILS
 # ==========================================
+# Generate a timestamped log filename
+timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+log_filename = f"orchestrator_{timestamp_str}.log"
+
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(message)s",
     datefmt="%H:%M:%S",
-    handlers=[logging.FileHandler("orchestrator.log"), logging.StreamHandler()]
+    handlers=[
+        logging.FileHandler(log_filename), # <--- Logs to timestamped file
+        logging.StreamHandler()            # <--- Logs to terminal
+    ]
 )
 
 def log(msg):
@@ -81,19 +89,14 @@ def get_experiment_files():
 def create_cluster(node_count):
     log(f"🔨 ENSURING CLUSTER {K8SCLUSTER_NAME} EXISTS ({node_count} nodes)...")
     try:
-        # Create command
         run_cmd([
             "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
-            "--zone", ZONE,
-            "--num-nodes", str(node_count),
-            "--machine-type", "e2-medium", 
-            "--disk-type", "pd-standard", "--disk-size", "20",
-            "--quiet"
+            "--zone", ZONE, "--num-nodes", str(node_count),
+            "--machine-type", "e2-medium", "--quiet"
         ])
     except:
         log("⚠️ Cluster creation skipped (likely already exists). Proceeding...")
-
-    # Get Credentials
+    
     run_cmd([
         "gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME,
         "--zone", ZONE, "--project", PROJECT_ID
@@ -101,10 +104,7 @@ def create_cluster(node_count):
 
 def delete_cluster():
     try:
-        run_cmd([
-            "gcloud", "container", "clusters", "delete", K8SCLUSTER_NAME,
-            "--zone", ZONE, "--quiet"
-        ])
+        run_cmd(["gcloud", "container", "clusters", "delete", K8SCLUSTER_NAME, "--zone", ZONE, "--quiet"])
         log("✅ Cluster deleted.")
     except Exception as e:
         log(f"⚠️ Cluster delete failed: {e}")
@@ -113,12 +113,17 @@ def delete_cluster():
 # 🚀 3. MAIN LOOP
 # ==========================================
 def main():
+    log(f"🎬 Script started. Logs will be saved to: {log_filename}")
+    
+    # Store the root directory so we can always come back
+    ROOT_DIR = os.getcwd() 
+    
     files = get_experiment_files()
     if not files: 
         log("❌ No files found. Exiting.")
         return
 
-    # 1. SETUP INFRASTRUCTURE (Run once at start)
+    # 1. SETUP INFRASTRUCTURE
     create_cluster(K8SNODE_COUNT)
     
     try:
@@ -126,84 +131,71 @@ def main():
         for i, filepath in enumerate(files):
             filename = os.path.basename(filepath)
             
-            # --- A. EXTRACT VARIABLES FROM FILENAME ---
-            # Default values
+            # --- A. EXTRACT VARIABLES ---
             p2p_nodes = 0
-            clusters = 0
-            degree = 0
-
-            # Regex 1: Total Nodes (e.g., "nodes1000")
+            # Regex logic...
             node_match = re.search(r"nodes(\d+)", filename)
             if node_match: p2p_nodes = int(node_match.group(1))
 
-            # Regex 2: Clusters (e.g., "_k8" or "_AC8")
-            cluster_match = re.search(r"(_k|_AC)(\d+)", filename)
-            if cluster_match: clusters = int(cluster_match.group(2))
-
-            # Regex 3: Degree (e.g., "_BA5")
-            degree_match = re.search(r"_BA(\d+)", filename)
-            if degree_match: degree = int(degree_match.group(1))
-
-            # --- GENERATE TEST ID ---
-            # timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-            short_uuid = uuid.uuid4().hex[:4]
-            TEST_ID = f"{filename.replace('.json', '')}_{short_uuid}"
+            TEST_ID = f"{filename.replace('.json', '')}_{datetime.now().strftime('%Y%m%d_%H%M')}"
 
             log(f"\n[{i+1}/{len(files)}] 🚀 STARTING EXPERIMENT: {filename}")
-            log(f"   🔹 P2P Nodes: {p2p_nodes} | Clusters: {clusters} | Degree: {degree}")
-            log(f"   🆔 TEST ID: {TEST_ID}")
+            log(f"   🔹 P2P Nodes: {p2p_nodes} | ID: {TEST_ID}")
 
             try:
                 # --- B. DEPLOY WORKLOAD (HELM) ---
-                # We do this INSIDE the loop so 'totalNodes' updates per file
-                log(f"Deploying Helm Chart with {p2p_nodes} pods...")
-                helm_cmd = (
-                    f"helm install simcn ./chartsim "
-                    f"--set testType=default,totalNodes={p2p_nodes},"
-                    f"image.tag={IMAGE_TAG},image.name={IMAGE_NAME} "
-                    f"--debug"
-                )
-                run_cmd(helm_cmd, shell=True)
+                log(f"📂 Changing directory to '{HELM_CHART_FOLDER}' for Helm...")
+                os.chdir(HELM_CHART_FOLDER) # <--- GO INTO FOLDER
                 
-                # Wait for pods to start
+                try:
+                    helm_cmd = (
+                        f"helm install simcn ./chartsim "
+                        f"--set testType=default,totalNodes={p2p_nodes},"
+                        f"image.tag={IMAGE_TAG},image.name={IMAGE_NAME} "
+                        f"--debug"
+                    )
+                    run_cmd(helm_cmd, shell=True)
+                finally:
+                    # ALWAYS go back to root, even if helm fails
+                    os.chdir(ROOT_DIR) # <--- GO BACK
+                    log(f"📂 Returned to root directory: {ROOT_DIR}")
+
+                # Wait for pods
                 log("Waiting 60s for pods to initialize...")
                 time.sleep(60)
 
-                # --- C. PREPARE (Inject Topology) ---
+                # --- C. PREPARE ---
                 log(f"Injecting Topology: {filename}")
                 # run_cmd(f"python3 prepare.py --filename {filename}", shell=True)
 
-                # --- D. EXECUTE (Trigger Gossip) ---
+                # --- D. EXECUTE ---
                 log("Triggering Gossip...")
                 # run_cmd(f"python3 automate.py --trigger --test-id {TEST_ID}", shell=True)
 
-                # --- E. WAIT (Experiment Running) ---
+                # --- E. WAIT ---
                 log(f"Running experiment for {EXPERIMENT_DURATION}s...")
                 time.sleep(EXPERIMENT_DURATION)
-                                
-                # --- F. FLUSH LOGS ---
+                
+                # --- F. FLUSH ---
                 log("Waiting 10s for log flush...")
                 time.sleep(10)
 
-                # --- G. EXPORT DATA ---
-                # export_data(TEST_ID)
-                # send_email(f"DONE: {filename}", f"Test ID: {TEST_ID}")
-
             except Exception as e:
                 log(f"❌ FAILED: {filename} - {e}")
+                # Ensure we are back in root if crash happened inside the helm block
+                if os.getcwd() != ROOT_DIR:
+                    os.chdir(ROOT_DIR)
             
             finally:
-                # --- CLEANUP WORKLOAD (Crucial for next loop) ---
+                # --- CLEANUP WORKLOAD ---
                 log("🧹 Cleaning up Helm release...")
                 try:
                     run_cmd("helm uninstall simcn", shell=True)
-                    # Wait for pods to actually vanish before next install
                     time.sleep(30) 
                 except:
-                    log("⚠️ Helm uninstall failed (maybe it wasn't installed).")
+                    log("⚠️ Helm uninstall failed.")
 
     finally:
-        # 3. TEARDOWN INFRASTRUCTURE (End of script)
         log("🏁 All jobs finished. Deleting Cluster...")
         delete_cluster()
 
@@ -211,4 +203,4 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        log("\n🛑 Script stopped by user. PLEASE CHECK GKE CONSOLE TO AVOID BILLING!")
+        log("\n🛑 Script stopped by user.")
