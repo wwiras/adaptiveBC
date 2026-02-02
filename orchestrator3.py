@@ -49,11 +49,7 @@ def log(msg):
 # ==========================================
 class ExperimentHelper:
     def run_command(self, command, shell=True, suppress_output=False, capture=True):
-        """
-        Modified to allow real-time output if capture=False.
-        """
         try:
-            # If capture is False, output goes directly to terminal
             result = subprocess.run(
                 command, 
                 check=True, 
@@ -95,10 +91,10 @@ class ExperimentHelper:
 
     def trigger_gossip_hybrid(self, pod_name, test_id, cycle_index):
         current_timeout = BASE_TRIGGER_TIMEOUT + ((cycle_index - 1) * TIMEOUT_INCREMENT)
-        message = f"{test_id}-trigger"
-        log(f"⚡ Triggering Gossip in {pod_name} (Msg: {message})")
+        # test_id is already the formatted message from the main loop
+        log(f"⚡ Triggering Gossip in {pod_name} (Msg: {test_id})")
         
-        cmd = ['kubectl', 'exec', pod_name, '--', 'python3', 'start.py', '--message', message]
+        cmd = ['kubectl', 'exec', pod_name, '--', 'python3', 'start.py', '--message', test_id]
         start_time = time.time()
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
 
@@ -140,7 +136,8 @@ def main():
         topology_list.append({
             "path": filepath,
             "filename": filename,
-            "node_count": node_count
+            "node_count": node_count,
+            "unique_id": filename.replace('.json', '')
         })
 
     topology_list.sort(key=lambda x: x['node_count'])
@@ -150,35 +147,30 @@ def main():
         return
 
     # 2. INFRASTRUCTURE SETUP
-    log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME} (Progress shown below)...")
+    log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME}...")
     try:
-        # Progress is visible because we don't capture_output/redirect to DEVNULL
         subprocess.run([
             "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
             "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
             "--machine-type", "e2-medium", "--quiet"
         ], check=True)
     except subprocess.CalledProcessError:
-        log("ℹ️ Cluster might already exist or creation encountered an issue. Continuing...")
+        log("ℹ️ Cluster setup check complete.")
     
-    subprocess.run([
-        "gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, 
-        "--zone", ZONE, "--project", PROJECT_ID
-    ], check=True)
+    subprocess.run(["gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, "--zone", ZONE, "--project", PROJECT_ID], check=True)
 
     # 3. EXPERIMENT LOOP
     try:
         for i, topo in enumerate(topology_list):
             filename = topo['filename']
             p2p_nodes = topo['node_count']
-            log(f"\n[{i+1}/{len(topology_list)}] 🚀 STARTING TOPOLOGY: {filename} ({p2p_nodes} nodes)")
+            u_id = topo['unique_id']
+            log(f"\n[{i+1}/{len(topology_list)}] 🚀 STARTING TOPOLOGY: {filename}")
 
             # --- A. CONDITIONAL HELM DEPLOYMENT ---
             current_workload = helper.get_current_running_pod_count()
-            log(f"🔍 Workload Check: Current Pods={current_workload}, Required={p2p_nodes}")
-
             if current_workload != p2p_nodes:
-                log("🔄 Scaling Workload: Reinstalling Helm Chart...")
+                log(f"🔄 Scaling Workload to {p2p_nodes} pods...")
                 try:
                     helper.run_command("helm uninstall simcn", suppress_output=True)
                     time.sleep(5) 
@@ -186,70 +178,45 @@ def main():
 
                 os.chdir(HELM_CHART_FOLDER)
                 try:
-                    helm_cmd = (
-                        f"helm install simcn ./chartsim "
-                        f"--set testType=default,totalNodes={p2p_nodes},"
-                        f"image.tag={IMAGE_TAG},image.name={IMAGE_NAME}"
-                    )
-                    helper.run_command(helm_cmd, capture=False) # Show helm output
+                    helm_cmd = (f"helm install simcn ./chartsim --set testType=default,"
+                                f"totalNodes={p2p_nodes},image.tag={IMAGE_TAG},image.name={IMAGE_NAME}")
+                    helper.run_command(helm_cmd, capture=False)
                 finally:
                     os.chdir(ROOT_DIR)
 
                 if not helper.wait_for_pods_to_be_ready(expected_pods=p2p_nodes):
-                    raise Exception("Pods never reached required scale.")
-            else:
-                log("⚡ Workload matches current pods. Skipping Helm installation.")
+                    raise Exception("Pods scale-up failed.")
 
             # --- B. INJECT TOPOLOGY ---
             log(f"💉 Injecting Topology: {filename}")
-            res = subprocess.run(f"python3 prepare.py --filename {filename}", shell=True)
-            if res.returncode != 0: raise Exception("Topology injection failed")
+            subprocess.run(f"python3 prepare.py --filename {filename}", shell=True, check=True)
 
             # --- C. REPEAT TEST LOOP ---
             for run_idx in range(1, NUM_REPEAT_TESTS + 1):
-                run_id = f"{filename.replace('.json', '')}_Run{run_idx}_{datetime.now().strftime('%H%M%S')}"
-                log(f"\n   🔄 [Run {run_idx}/{NUM_REPEAT_TESTS}] ID: {run_id}")
+                # Format: unique_id-cubaan[replicas]-[iteration]
+                # Example: nodes10_BA4-cubaan10-1
+                test_id = f"{u_id}-cubaan{p2p_nodes}-{run_idx}"
+                
+                log(f"\n   🔄 [Run {run_idx}/{NUM_REPEAT_TESTS}] Message: {test_id}")
 
-                # Select pod and Trigger
-                # pod = helper.select_random_pod()
-                # helper.trigger_gossip_hybrid(pod, run_id, cycle_index=run_idx)
+                # Select pod and Trigger with the new test_id message
+                pod = helper.select_random_pod()
+                helper.trigger_gossip_hybrid(pod, test_id, cycle_index=run_idx)
 
                 log(f"      ⏳ Propagating for {EXPERIMENT_DURATION}s...")
                 time.sleep(EXPERIMENT_DURATION)
-                time.sleep(5) # Buffer
+                time.sleep(2) # Short buffer
 
     except Exception as e:
-        log(f"❌ CRITICAL ERROR during experiment: {e}")
+        log(f"❌ CRITICAL ERROR: {e}")
     
     finally:
-        # --- 4. CLEANUP SECTION ---
         log("\n🧹 Starting Post-Experiment Cleanup...")
-        
-        # A. Uninstall Helm Workload
-        log("🗑️ Uninstalling Helm release 'simcn'...")
         try:
             subprocess.run(["helm", "uninstall", "simcn"], check=False)
+            subprocess.run(["gcloud", "container", "clusters", "delete", K8SCLUSTER_NAME, "--zone", ZONE, "--project", PROJECT_ID, "--quiet"], check=True)
         except: pass
-
-        # B. Delete GKE Cluster
-        log(f"🔥 Deleting GKE Cluster {K8SCLUSTER_NAME} (Progress shown below)...")
-        try:
-            # Progress is visible as we don't redirect output
-            subprocess.run([
-                "gcloud", "container", "clusters", "delete", K8SCLUSTER_NAME,
-                "--zone", ZONE, "--project", PROJECT_ID, "--quiet"
-            ], check=True)
-            log("✅ Cluster deleted successfully.")
-        except subprocess.CalledProcessError as e:
-            log(f"⚠️ Manual cleanup of the cluster might be required: {e}")
-
-        log("🏁 Orchestrator Finished.")
+        log("🏁 Done.")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        log("\n🛑 Stopped by user. Attempting cleanup...")
-        # Note: A full cleanup here could be dangerous if the cluster is half-formed, 
-        # but you can call the cleanup logic if desired.
-        sys.exit(0)
+    main()
