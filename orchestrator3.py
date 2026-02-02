@@ -173,8 +173,9 @@ def main():
         for i, topo in enumerate(topology_list):
             filename = topo['filename']
             p2p_nodes = topo['node_count']
+            unique_id = str(uuid.uuid4())[:5]
             # unique_id = topo['unique_id']
-            log(f"\n[{i+1}/{len(topology_list)}] 🚀 STARTING TOPOLOGY: {filename}")
+            log(f"\n[{i+1}/{len(topology_list)}] 🚀 STARTING TOPOLOGY: {filename} with ID:{unique_id}")
 
             # --- A. CONDITIONAL HELM DEPLOYMENT ---
             current_workload = helper.get_current_running_pod_count()
@@ -206,13 +207,15 @@ def main():
                 # Example: nodes10_BA4-cubaan10-1
                 # unique_id = str(uuid.uuid4())[:5]
                 # test_id = f"{unique_id}-cubaan{p2p_nodes}-{run_idx}"
-                test_id = f"{str(uuid.uuid4())[:5]}-cubaan{p2p_nodes}-{run_idx}"
+                test_id = f"{unique_id}-cubaan{p2p_nodes}-{run_idx}"
+                # topo['test_id'] = test_id
+                # log(f"topo[{}]= {topo}s...")
                 
                 log(f"\n   🔄 [Run {run_idx}/{NUM_REPEAT_TESTS}] Message: {test_id}")
 
                 # Select pod and Trigger with the new test_id message
-                # pod = helper.select_random_pod()
-                # helper.trigger_gossip_hybrid(pod, test_id, cycle_index=run_idx)
+                pod = helper.select_random_pod()
+                helper.trigger_gossip_hybrid(pod, test_id, cycle_index=run_idx)
 
                 log(f"      ⏳ Propagating for {EXPERIMENT_DURATION}s...")
                 time.sleep(EXPERIMENT_DURATION)
