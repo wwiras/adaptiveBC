@@ -23,7 +23,7 @@ IMAGE_TAG = "v17"
 TOPOLOGY_FOLDER = "topology"
 HELM_CHART_FOLDER = "simcl2" 
 
-EXPERIMENT_DURATION = 20    
+EXPERIMENT_DURATION = 10    
 BASE_TRIGGER_TIMEOUT = 10   
 TIMEOUT_INCREMENT = 2       
 NUM_REPEAT_TESTS = 3        
@@ -48,19 +48,27 @@ def log(msg):
 # 🛠️ HELPER CLASS
 # ==========================================
 class ExperimentHelper:
-    def run_command(self, command, shell=True, suppress_output=False):
+    def run_command(self, command, shell=True, suppress_output=False, capture=True):
+        """
+        Modified to allow real-time output if capture=False.
+        """
         try:
-            result = subprocess.run(command, check=True, text=True, capture_output=True, shell=shell)
-            return result.stdout.strip()
+            # If capture is False, output goes directly to terminal
+            result = subprocess.run(
+                command, 
+                check=True, 
+                text=True, 
+                capture_output=capture, 
+                shell=shell
+            )
+            return result.stdout.strip() if capture else ""
         except subprocess.CalledProcessError as e:
             if not suppress_output:
-                log(f"❌ Error executing: {e.cmd}\nStderr: {e.stderr}")
+                log(f"❌ Error executing: {e.cmd}\nStderr: {getattr(e, 'stderr', 'Check console')}")
             raise e
 
     def get_current_running_pod_count(self, namespace='default'):
-        """Checks real-time workload using label selectors."""
         try:
-            # Note: Ensure 'app=bcgossip' matches the label in your Helm Chart
             cmd = f"kubectl get pods -n {namespace} -l app=bcgossip --no-headers | grep Running | wc -l"
             count = self.run_command(cmd, suppress_output=True)
             return int(count) if count else 0
@@ -135,7 +143,6 @@ def main():
             "node_count": node_count
         })
 
-    # Sort from low number of nodes to high
     topology_list.sort(key=lambda x: x['node_count'])
     
     if not topology_list: 
@@ -143,15 +150,21 @@ def main():
         return
 
     # 2. INFRASTRUCTURE SETUP
-    log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME}...")
+    log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME} (Progress shown below)...")
     try:
+        # Progress is visible because we don't capture_output/redirect to DEVNULL
         subprocess.run([
             "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
-            "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), "--machine-type", "e2-medium", "--quiet"
-        ], check=True, capture_output=True)
-    except: pass
+            "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
+            "--machine-type", "e2-medium", "--quiet"
+        ], check=True)
+    except subprocess.CalledProcessError:
+        log("ℹ️ Cluster might already exist or creation encountered an issue. Continuing...")
     
-    subprocess.run(["gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, "--zone", ZONE, "--project", PROJECT_ID], check=True)
+    subprocess.run([
+        "gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, 
+        "--zone", ZONE, "--project", PROJECT_ID
+    ], check=True)
 
     # 3. EXPERIMENT LOOP
     try:
@@ -178,7 +191,7 @@ def main():
                         f"--set testType=default,totalNodes={p2p_nodes},"
                         f"image.tag={IMAGE_TAG},image.name={IMAGE_NAME}"
                     )
-                    helper.run_command(helm_cmd)
+                    helper.run_command(helm_cmd, capture=False) # Show helm output
                 finally:
                     os.chdir(ROOT_DIR)
 
@@ -206,12 +219,37 @@ def main():
                 time.sleep(5) # Buffer
 
     except Exception as e:
-        log(f"❌ CRITICAL ERROR: {e}")
+        log(f"❌ CRITICAL ERROR during experiment: {e}")
+    
     finally:
-        log("🏁 All experiments processed. Cluster remains active for inspection.")
+        # --- 4. CLEANUP SECTION ---
+        log("\n🧹 Starting Post-Experiment Cleanup...")
+        
+        # A. Uninstall Helm Workload
+        log("🗑️ Uninstalling Helm release 'simcn'...")
+        try:
+            subprocess.run(["helm", "uninstall", "simcn"], check=False)
+        except: pass
+
+        # B. Delete GKE Cluster
+        log(f"🔥 Deleting GKE Cluster {K8SCLUSTER_NAME} (Progress shown below)...")
+        try:
+            # Progress is visible as we don't redirect output
+            subprocess.run([
+                "gcloud", "container", "clusters", "delete", K8SCLUSTER_NAME,
+                "--zone", ZONE, "--project", PROJECT_ID, "--quiet"
+            ], check=True)
+            log("✅ Cluster deleted successfully.")
+        except subprocess.CalledProcessError as e:
+            log(f"⚠️ Manual cleanup of the cluster might be required: {e}")
+
+        log("🏁 Orchestrator Finished.")
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        log("\n🛑 Stopped by user.")
+        log("\n🛑 Stopped by user. Attempting cleanup...")
+        # Note: A full cleanup here could be dangerous if the cluster is half-formed, 
+        # but you can call the cleanup logic if desired.
+        sys.exit(0)
