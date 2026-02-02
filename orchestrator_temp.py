@@ -8,6 +8,7 @@ import select
 import logging
 import sys
 import json
+import uuid
 from datetime import datetime, timezone, timedelta
 
 # ==========================================
@@ -172,7 +173,7 @@ def main():
         for i, topo in enumerate(topology_list):
             filename = topo['filename']
             p2p_nodes = topo['node_count']
-            u_id = topo['unique_id']
+            # unique_id = topo['unique_id']
             log(f"\n[{i+1}/{len(topology_list)}] 🚀 STARTING TOPOLOGY: {filename}")
 
             # --- A. CONDITIONAL HELM DEPLOYMENT ---
@@ -203,7 +204,9 @@ def main():
             for run_idx in range(1, NUM_REPEAT_TESTS + 1):
                 # Format: unique_id-cubaan[replicas]-[iteration]
                 # Example: nodes10_BA4-cubaan10-1
-                test_id = f"{u_id}-cubaan{p2p_nodes}-{run_idx}"
+                # unique_id = str(uuid.uuid4())[:5]
+                # test_id = f"{unique_id}-cubaan{p2p_nodes}-{run_idx}"
+                test_id = f"{str(uuid.uuid4())[:5]}-cubaan{p2p_nodes}-{run_idx}"
                 
                 log(f"\n   🔄 [Run {run_idx}/{NUM_REPEAT_TESTS}] Message: {test_id}")
 
