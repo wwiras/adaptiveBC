@@ -8,7 +8,7 @@ import select
 import logging
 import sys
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 # ==========================================
 # 🔧 USER CONFIGURATION
@@ -44,6 +44,10 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.FileHandler(log_filename), logging.StreamHandler()]
 )
+
+# Optional: If you want the [asctime] in the logs to also show MYT, 
+# you can customize the log formatter to use the MYT timezone.
+logging.Formatter.converter = lambda *args: datetime.now(MYT).timetuple()
 
 def log(msg):
     logging.info(msg)
