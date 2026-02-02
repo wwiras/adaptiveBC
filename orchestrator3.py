@@ -200,8 +200,8 @@ def main():
                 log(f"\n   🔄 [Run {run_idx}/{NUM_REPEAT_TESTS}] Message: {test_id}")
 
                 # Select pod and Trigger with the new test_id message
-                pod = helper.select_random_pod()
-                helper.trigger_gossip_hybrid(pod, test_id, cycle_index=run_idx)
+                # pod = helper.select_random_pod()
+                # helper.trigger_gossip_hybrid(pod, test_id, cycle_index=run_idx)
 
                 log(f"      ⏳ Propagating for {EXPERIMENT_DURATION}s...")
                 time.sleep(EXPERIMENT_DURATION)
