@@ -45,6 +45,10 @@ logging.basicConfig(
     handlers=[logging.FileHandler(log_filename), logging.StreamHandler()]
 )
 
+# Optional: If you want the [asctime] in the logs to also show MYT, 
+# you can customize the log formatter to use the MYT timezone.
+logging.Formatter.converter = lambda *args: datetime.now(MYT).timetuple()
+
 def log(msg):
     logging.info(msg)
 
