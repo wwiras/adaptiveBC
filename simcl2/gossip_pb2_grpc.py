@@ -3,7 +3,6 @@
 import grpc
 import warnings
 
-from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 import gossip_pb2 as gossip__pb2
 
 GRPC_GENERATED_VERSION = '1.74.0'
@@ -42,7 +41,7 @@ class GossipServiceStub(object):
                 _registered_method=True)
         self.UpdateNeighbors = channel.unary_unary(
                 '/gossip.GossipService/UpdateNeighbors',
-                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                request_serializer=gossip__pb2.NeighborList.SerializeToString,
                 response_deserializer=gossip__pb2.Acknowledgment.FromString,
                 _registered_method=True)
 
@@ -57,7 +56,7 @@ class GossipServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def UpdateNeighbors(self, request, context):
-        """<-- Add this new RPC
+        """Accepts the list of neighbors directly instead of google.protobuf.Empty
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -73,7 +72,7 @@ def add_GossipServiceServicer_to_server(servicer, server):
             ),
             'UpdateNeighbors': grpc.unary_unary_rpc_method_handler(
                     servicer.UpdateNeighbors,
-                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    request_deserializer=gossip__pb2.NeighborList.FromString,
                     response_serializer=gossip__pb2.Acknowledgment.SerializeToString,
             ),
     }
@@ -129,7 +128,7 @@ class GossipService(object):
             request,
             target,
             '/gossip.GossipService/UpdateNeighbors',
-            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            gossip__pb2.NeighborList.SerializeToString,
             gossip__pb2.Acknowledgment.FromString,
             options,
             channel_credentials,
