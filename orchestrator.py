@@ -21,7 +21,7 @@ K8SNODE_COUNT = 5
 
 # Workload Settings (Helm/Pods)
 IMAGE_NAME = "wwiras/simcl2"
-IMAGE_TAG = "v14"
+IMAGE_TAG = "v17"
 BUCKET_NAME = "pulun-phd-experiments"
 TOPOLOGY_FOLDER = "topology"
 EXPERIMENT_DURATION = 100

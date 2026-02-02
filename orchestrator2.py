@@ -22,7 +22,7 @@ K8SCLUSTER_NAME = "bcgossip-cluster"
 K8SNODE_COUNT = 5  
 
 IMAGE_NAME = "wwiras/simcl2"
-IMAGE_TAG = "v14"
+IMAGE_TAG = "v17"
 TOPOLOGY_FOLDER = "topology"
 HELM_CHART_FOLDER = "simcl2" 
 
