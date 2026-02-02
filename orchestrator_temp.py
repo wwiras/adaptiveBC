@@ -9,6 +9,8 @@ import logging
 import sys
 import json
 import uuid
+import string
+import secrets
 from datetime import datetime, timezone, timedelta
 
 # ==========================================
@@ -29,29 +31,72 @@ BASE_TRIGGER_TIMEOUT = 10
 TIMEOUT_INCREMENT = 2       
 NUM_REPEAT_TESTS = 3        
 
+
 # ==========================================
-# 📝 LOGGING SETUP
+# 🛠️ HELPERS & TIMEZONE
 # ==========================================
-# Define MYT (UTC+8)
 MYT = timezone(timedelta(hours=8))
 
-# Get the current time in MYT
+def get_short_id(length=5):
+    characters = string.digits + string.ascii_letters
+    return ''.join(secrets.choice(characters) for _ in range(length))
+
+# ==========================================
+# 📝 LOGGING SETUP (MYT & /logs Directory)
+# ==========================================
+# 1. Define and create the directory
+LOG_DIR = "logs" # Or "/logs" if you mean the root directory
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+# 2. Generate the unique filename
+unique_run_id = get_short_id(5)
 timestamp_str = datetime.now(MYT).strftime("%Y%m%d_%H%M%S")
-log_filename = f"orchestrator_{timestamp_str}.log"
+log_filename = f"orchestrator_{unique_run_id}_{timestamp_str}.log"
+
+# 3. Join path: result will be "logs/orchestrator_K9b2X_20260203_001500.log"
+full_log_path = os.path.join(LOG_DIR, log_filename)
 
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(message)s",
     datefmt="%H:%M:%S",
-    handlers=[logging.FileHandler(log_filename), logging.StreamHandler()]
+    handlers=[
+        logging.FileHandler(full_log_path), 
+        logging.StreamHandler()
+    ]
 )
 
-# Optional: If you want the [asctime] in the logs to also show MYT, 
-# you can customize the log formatter to use the MYT timezone.
+# Ensure internal log timestamps use MYT
 logging.Formatter.converter = lambda *args: datetime.now(MYT).timetuple()
 
 def log(msg):
     logging.info(msg)
+
+
+# ==========================================
+# 📝 LOGGING SETUP
+# ==========================================
+# Define MYT (UTC+8)
+# MYT = timezone(timedelta(hours=8))
+
+# # Get the current time in MYT
+# timestamp_str = datetime.now(MYT).strftime("%Y%m%d_%H%M%S")
+# log_filename = f"orchestrator_{timestamp_str}.log"
+
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format="[%(asctime)s] %(message)s",
+#     datefmt="%H:%M:%S",
+#     handlers=[logging.FileHandler(log_filename), logging.StreamHandler()]
+# )
+
+# # Optional: If you want the [asctime] in the logs to also show MYT, 
+# # you can customize the log formatter to use the MYT timezone.
+# logging.Formatter.converter = lambda *args: datetime.now(MYT).timetuple()
+
+# def log(msg):
+#     logging.info(msg)
 
 # ==========================================
 # 🛠️ HELPER CLASS
@@ -173,8 +218,9 @@ def main():
         for i, topo in enumerate(topology_list):
             filename = topo['filename']
             p2p_nodes = topo['node_count']
-            unique_id = str(uuid.uuid4())[:5]
-            # unique_id = topo['unique_id']
+            # unique_id = str(uuid.uuid4())[:5]
+            unique_id = get_short_id(5)
+
             log(f"\n[{i+1}/{len(topology_list)}] 🚀 STARTING TOPOLOGY: {filename} with ID:{unique_id}")
 
             # --- A. CONDITIONAL HELM DEPLOYMENT ---
