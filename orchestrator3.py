@@ -224,7 +224,7 @@ def main():
             "--min-nodes", "1",
             "--max-nodes", "100",
             "--quiet"
-        ], check=True, capture_output=True, text=True)
+        ], check=True, capture_output=False, text=True)
         log("✅ Cluster created successfully.")
     except subprocess.CalledProcessError as e:
         # If the error message contains 'already exists', we can safely continue
