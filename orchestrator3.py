@@ -75,30 +75,6 @@ def log(msg):
 
 
 # ==========================================
-# 📝 LOGGING SETUP
-# ==========================================
-# Define MYT (UTC+8)
-# MYT = timezone(timedelta(hours=8))
-
-# # Get the current time in MYT
-# timestamp_str = datetime.now(MYT).strftime("%Y%m%d_%H%M%S")
-# log_filename = f"orchestrator_{timestamp_str}.log"
-
-# logging.basicConfig(
-#     level=logging.INFO,
-#     format="[%(asctime)s] %(message)s",
-#     datefmt="%H:%M:%S",
-#     handlers=[logging.FileHandler(log_filename), logging.StreamHandler()]
-# )
-
-# # Optional: If you want the [asctime] in the logs to also show MYT, 
-# # you can customize the log formatter to use the MYT timezone.
-# logging.Formatter.converter = lambda *args: datetime.now(MYT).timetuple()
-
-# def log(msg):
-#     logging.info(msg)
-
-# ==========================================
 # 🛠️ HELPER CLASS
 # ==========================================
 class ExperimentHelper:
@@ -201,17 +177,63 @@ def main():
         return
 
     # 2. INFRASTRUCTURE SETUP
-    log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME}...")
+    # log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME}...")
+    # try:
+    #     subprocess.run([
+    #         "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
+    #         "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
+    #         "--machine-type", "e2-medium", "--quiet"
+    #     ], check=True)
+    # except subprocess.CalledProcessError:
+    #     log("ℹ️ Cluster setup check complete.")
+    
+    # subprocess.run(["gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, "--zone", ZONE, "--project", PROJECT_ID], check=True)
+    
+    
+    # 2. INFRASTRUCTURE SETUP
+    log("\n" + "="*50)
+    log("🏗️  INFRASTRUCTURE CONFIGURATION")
+    log(f"   - Cluster Name: {K8SCLUSTER_NAME}")
+    log(f"   - Zone:         {ZONE}")
+    log(f"   - Nodes: {K8SNODE_COUNT}")
+    log(f"   - Machine Type: e2-medium")
+    log(f"   - Project ID:   {PROJECT_ID}")
+    log(f"   - Image:        {IMAGE_NAME}:{IMAGE_TAG}")
+    log("="*50 + "\n")
+
+    log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME} (Progress shown below)...")
     try:
+        # Note: We use the variables here so any change in USER CONFIG reflects in the logs
+        # subprocess.run([
+        #     "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
+        #     "--zone", ZONE, 
+        #     "--num-nodes", str(K8SNODE_COUNT), 
+        #     "--machine-type", "e2-medium", 
+        #     "--quiet"
+        # ], check=True)
+        
         subprocess.run([
             "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
-            "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
-            "--machine-type", "e2-medium", "--quiet"
+            "--zone", ZONE, 
+            "--num-nodes", str(K8SNODE_COUNT),
+            "--enable-autoscaling",
+            "--min-nodes", "1",
+            "--max-nodes", "170", # Increase this to allow for more nodes
+            "--max-pods-per-node", "40",  # 👈 This forces your density rule
+            "--machine-type", "e2-medium", 
+            "--quiet"
         ], check=True)
+        
+        log("✅ Cluster created successfully.")
     except subprocess.CalledProcessError:
-        log("ℹ️ Cluster setup check complete.")
+        log("ℹ️ Cluster setup check complete (Cluster likely already exists).")
     
-    subprocess.run(["gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, "--zone", ZONE, "--project", PROJECT_ID], check=True)
+    log(f"🔗 Fetching credentials for {K8SCLUSTER_NAME}...")
+    subprocess.run([
+        "gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, 
+        "--zone", ZONE, 
+        "--project", PROJECT_ID
+    ], check=True)
 
     # 3. EXPERIMENT LOOP
     try:
@@ -243,16 +265,30 @@ def main():
                 if not helper.wait_for_pods_to_be_ready(expected_pods=p2p_nodes):
                     raise Exception("Pods scale-up failed.")
 
+            # # --- B. INJECT TOPOLOGY ---
+            # log(f"💉 Injecting Topology: {filename}")
+            # subprocess.run(f"python3 prepare.py --filename {filename}", shell=True, check=True)
+            
             # --- B. INJECT TOPOLOGY ---
             log(f"💉 Injecting Topology: {filename}")
-            subprocess.run(f"python3 prepare.py --filename {filename}", shell=True, check=True)
+            start_inj = time.time()
+            
+            # Using capture_output=False (default) lets it print to console
+            # check=True ensures we catch failures immediately
+            res = subprocess.run(
+                f"python3 prepare.py --filename {filename}", 
+                shell=True, 
+                check=True,
+                text=True
+            )
+            
+            duration_inj = time.time() - start_inj
+            log(f"✅ Injection completed in {duration_inj:.2f} seconds.")
 
             # --- C. REPEAT TEST LOOP ---
             for run_idx in range(1, NUM_REPEAT_TESTS + 1):
                 # Format: unique_id-cubaan[replicas]-[iteration]
-                # Example: nodes10_BA4-cubaan10-1
-                # unique_id = str(uuid.uuid4())[:5]
-                # test_id = f"{unique_id}-cubaan{p2p_nodes}-{run_idx}"
+                # Example: z66ef_BA4-cubaan10-1
                 test_id = f"{unique_id}-cubaan{p2p_nodes}-{run_idx}"
                 # topo['test_id'] = test_id
                 # log(f"topo[{}]= {topo}s...")
