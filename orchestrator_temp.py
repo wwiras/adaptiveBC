@@ -189,7 +189,6 @@ def main():
     
     # subprocess.run(["gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, "--zone", ZONE, "--project", PROJECT_ID], check=True)
     
-    
     # 2. INFRASTRUCTURE SETUP
     log("\n" + "="*50)
     log("🏗️  INFRASTRUCTURE CONFIGURATION")
@@ -201,8 +200,7 @@ def main():
     log(f"   - Image:        {IMAGE_NAME}:{IMAGE_TAG}")
     log("="*50 + "\n")
 
-    log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME} (Progress shown below)...")
-    try:
+    # try:
         # Note: We use the variables here so any change in USER CONFIG reflects in the logs
         # subprocess.run([
         #     "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
@@ -211,29 +209,43 @@ def main():
         #     "--machine-type", "e2-medium", 
         #     "--quiet"
         # ], check=True)
-        
+    
+    log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME} (Progress shown below)...")
+    try:
+        # We added --enable-ip-alias to fix the 'max-pods-per-node' error
         subprocess.run([
             "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
             "--zone", ZONE, 
-            "--num-nodes", str(K8SNODE_COUNT),
+            "--num-nodes", str(K8SNODE_COUNT), 
+            "--machine-type", "e2-medium", 
+            "--enable-ip-alias",           # Required for custom max-pods
+            "--max-pods-per-node", "40", 
             "--enable-autoscaling",
             "--min-nodes", "1",
-            "--max-nodes", "170", # Increase this to allow for more nodes
-            "--max-pods-per-node", "40",  # 👈 This forces your density rule
-            "--machine-type", "e2-medium", 
+            "--max-nodes", "100",
             "--quiet"
-        ], check=True)
-        
+        ], check=True, capture_output=True, text=True)
         log("✅ Cluster created successfully.")
-    except subprocess.CalledProcessError:
-        log("ℹ️ Cluster setup check complete (Cluster likely already exists).")
+    except subprocess.CalledProcessError as e:
+        # If the error message contains 'already exists', we can safely continue
+        if "already exists" in e.stderr.lower():
+            log("ℹ️ Cluster already exists. Proceeding to fetch credentials...")
+        else:
+            # If it's a different error (like a quota or config issue), STOP here.
+            log(f"❌ CRITICAL ERROR: Failed to create cluster.\n{e.stderr}")
+            sys.exit(1) 
     
-    log(f"🔗 Fetching credentials for {K8SCLUSTER_NAME}...")
+    # Now this command will only run if the cluster actually exists
     subprocess.run([
         "gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, 
         "--zone", ZONE, 
         "--project", PROJECT_ID
     ], check=True)
+   
+    
+
+
+    
 
     # 3. EXPERIMENT LOOP
     try:
