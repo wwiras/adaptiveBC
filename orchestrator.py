@@ -57,20 +57,6 @@ log_filename = f"orchestrator_{timestamp_str}_{unique_run_id}.log"
 # 3. Join path: result will be "logs/orchestrator_K9b2X_20260203_001500.log"
 full_log_path = os.path.join(LOG_DIR, log_filename)
 
-# logging.basicConfig(
-#     level=logging.INFO,
-#     format="[%(asctime)s] %(message)s",
-#     datefmt="%H:%M:%S",
-#     handlers=[
-#         logging.FileHandler(full_log_path), 
-#         logging.StreamHandler()
-#     ]
-# )
-
-# Ensure internal log timestamps use MYT
-# logging.Formatter.converter = lambda *args: datetime.now(MYT).timetuple()
-
-#####
 # Update your FileHandler to use delay=False or flush manually
 file_handler = logging.FileHandler(full_log_path)
 stream_handler = logging.StreamHandler()
@@ -90,11 +76,6 @@ def log(msg):
     logging.info(msg)
     for handler in logging.getLogger().handlers:
         handler.flush()
-
-####
-
-# def log(msg):
-#     logging.info(msg)
 
 
 # ==========================================
@@ -210,12 +191,7 @@ def main():
     log(f"   - Image:        {IMAGE_NAME}:{IMAGE_TAG}")
     log(f"   - Date and Time: {datetime.now(MYT).strftime("%d-%m-%Y at %H:%M:%S")}")
     log("="*50 + "\n")
-
     log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME} (Progress shown below)...")
-
-   ####
-   # 2. INFRASTRUCTURE SETUP
-    log(f"🔨 Checking for Cluster {K8SCLUSTER_NAME}...")
     
     # Check if cluster exists (this is fast and captured)
     check_cmd = f"gcloud container clusters list --filter='name:{K8SCLUSTER_NAME}' --format='value(name)' --zone {ZONE}"
@@ -244,8 +220,6 @@ def main():
         "--zone", ZONE, 
         "--project", PROJECT_ID
     ], check=True)
-   ###
-   
 
     # 3. EXPERIMENT LOOP
     try:
