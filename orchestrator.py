@@ -266,19 +266,14 @@ def main():
         # ==========================================
         log("\n" + "="*95)
         log("📋 FINAL TEST EXECUTION SUMMARY")
-        log(f"{'TEST_ID':<30} | {'TOPOLOGY':<25} | {'NODES':<5} | {'K':<3} | {'D':<3}")
+        log(f"{'TEST_ID':<30} | {'TOPOLOGY':<40} | {'NODES':<5} ")
         log("-" * 95)
         
         for entry in test_summary:
-            fname = entry['topology']
-            k_match = re.search(r"k(\d+)", fname)
-            d_match = re.search(r"d(\d+)", fname)
-            
+            fname = entry['topology']            
             log(f"{entry['test_id']:<30} | "
                 f"{fname:<25} | "
-                f"{entry['pods']:<5} | "
-                f"{(k_match.group(1) if k_match else '?'):<3} | "
-                f"{(d_match.group(1) if d_match else '?'):<3}")
+                f"{entry['pods']:<5} ")
         
         log("="*95)
         log("🏁 Done.")
