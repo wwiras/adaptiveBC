@@ -242,9 +242,10 @@ def main():
 
             # --- C. REPEAT TEST LOOP ---
             for run_idx in range(1, NUM_REPEAT_TESTS + 1):
-                log(f"   🔄 [Run {run_idx}/{NUM_REPEAT_TESTS}] Message: {base_test_id}")
+                message = {base_test_id}-{run_idx}
+                log(f"   🔄 [Run {run_idx}/{NUM_REPEAT_TESTS}] Message: {message}")
                 pod = helper.select_random_pod()
-                helper.trigger_gossip_hybrid(pod, base_test_id, cycle_index=run_idx)
+                helper.trigger_gossip_hybrid(pod, message, cycle_index=run_idx)
 
                 log(f"      ⏳ Propagating for {EXPERIMENT_DURATION}s...")
                 time.sleep(EXPERIMENT_DURATION + 2)
