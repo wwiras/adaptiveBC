@@ -57,21 +57,44 @@ log_filename = f"orchestrator_{timestamp_str}_{unique_run_id}.log"
 # 3. Join path: result will be "logs/orchestrator_K9b2X_20260203_001500.log"
 full_log_path = os.path.join(LOG_DIR, log_filename)
 
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format="[%(asctime)s] %(message)s",
+#     datefmt="%H:%M:%S",
+#     handlers=[
+#         logging.FileHandler(full_log_path), 
+#         logging.StreamHandler()
+#     ]
+# )
+
+# Ensure internal log timestamps use MYT
+# logging.Formatter.converter = lambda *args: datetime.now(MYT).timetuple()
+
+#####
+# Update your FileHandler to use delay=False or flush manually
+file_handler = logging.FileHandler(full_log_path)
+stream_handler = logging.StreamHandler()
+
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(message)s",
     datefmt="%H:%M:%S",
-    handlers=[
-        logging.FileHandler(full_log_path), 
-        logging.StreamHandler()
-    ]
+    handlers=[file_handler, stream_handler]
 )
 
 # Ensure internal log timestamps use MYT
 logging.Formatter.converter = lambda *args: datetime.now(MYT).timetuple()
 
+# Add this small helper to force a disk write after every log call
 def log(msg):
     logging.info(msg)
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+
+####
+
+# def log(msg):
+#     logging.info(msg)
 
 
 # ==========================================
@@ -189,36 +212,39 @@ def main():
     log("="*50 + "\n")
 
     log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME} (Progress shown below)...")
-    try:
-        # We added --enable-ip-alias to fix the 'max-pods-per-node' error
-        subprocess.run([
-            "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
-            "--zone", ZONE, 
-            "--num-nodes", str(K8SNODE_COUNT), 
-            "--machine-type", "e2-medium", 
-            "--enable-ip-alias",           # Required for custom max-pods
-            "--max-pods-per-node", "40", 
-            "--enable-autoscaling",
-            "--min-nodes", "1",
-            "--max-nodes", "100",
-            "--quiet"
-        ], check=True, capture_output=False, text=True)
-        log("✅ Cluster created successfully.")
-    except subprocess.CalledProcessError as e:
-        # If the error message contains 'already exists', we can safely continue
-        if "already exists" in e.stderr.lower():
-            log("ℹ️ Cluster already exists. Proceeding to fetch credentials...")
-        else:
-            # If it's a different error (like a quota or config issue), STOP here.
-            log(f"❌ CRITICAL ERROR: Failed to create cluster.\n{e.stderr}")
-            sys.exit(1) 
+
+   ####
+   # 2. INFRASTRUCTURE SETUP
+    log(f"🔨 Checking for Cluster {K8SCLUSTER_NAME}...")
     
-    # Now this command will only run if the cluster actually exists
+    # Check if cluster exists (this is fast and captured)
+    check_cmd = f"gcloud container clusters list --filter='name:{K8SCLUSTER_NAME}' --format='value(name)' --zone {ZONE}"
+    existing = subprocess.run(check_cmd, shell=True, capture_output=True, text=True).stdout.strip()
+
+    if not existing:
+        log(f"🚀 Cluster not found. Building fresh (Progress shown below)...")
+        try:
+            subprocess.run([
+                "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
+                "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
+                "--machine-type", "e2-medium", "--enable-ip-alias",
+                "--max-pods-per-node", "40", "--enable-autoscaling",
+                "--min-nodes", "1", "--max-nodes", "100", "--quiet"
+            ], check=True) # capture_output is False by default here
+            log("✅ Cluster created successfully.")
+        except subprocess.CalledProcessError:
+            log("❌ CRITICAL ERROR: gcloud failed to create the cluster.")
+            sys.exit(1)
+    else:
+        log(f"ℹ️  Cluster '{K8SCLUSTER_NAME}' already exists. Skipping build.")
+   
+       # Now this command will only run if the cluster actually exists
     subprocess.run([
         "gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, 
         "--zone", ZONE, 
         "--project", PROJECT_ID
     ], check=True)
+   ###
    
 
     # 3. EXPERIMENT LOOP
