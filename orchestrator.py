@@ -109,11 +109,42 @@ def main():
     # 1. SCAN TOPOLOGIES
     files = sorted(glob.glob(os.path.join(TOPOLOGY_FOLDER, "*.json")))
     
-    # 2. CLUSTER SETUP
+    # 2. INFRASTRUCTURE SETUP
     log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME}...")
-    # (Omitted cluster creation logic for brevity - use your existing gcloud check)
-    subprocess.run(["gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, "--zone", ZONE], check=True)
+    
+    # A. Check if cluster exists
+    check_cmd = f"gcloud container clusters list --filter='name:{K8SCLUSTER_NAME}' --format='value(name)' --zone {ZONE}"
+    existing = subprocess.run(check_cmd, shell=True, capture_output=True, text=True).stdout.strip()
 
+    if not existing:
+        log(f"🚀 Cluster not found. Building fresh (Progress shown below)...")
+        try:
+            subprocess.run([
+                "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
+                "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
+                "--machine-type", "e2-medium", "--enable-ip-alias",
+                "--max-pods-per-node", "40", "--enable-autoscaling",
+                "--min-nodes", "1", "--max-nodes", "100", 
+                "--autoscaling-profile", "optimize-utilization",
+                "--quiet"
+            ], check=True)
+            log("✅ Cluster created successfully.")
+        except subprocess.CalledProcessError:
+            log("❌ CRITICAL ERROR: gcloud failed to create the cluster.")
+            sys.exit(1)
+    else:
+        log(f"ℹ️ Cluster '{K8SCLUSTER_NAME}' already exists. Skipping build.")
+
+    # B. Fetch credentials
+    subprocess.run(["gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, "--zone", ZONE], check=True)
+    
+    # 2. CLUSTER SETUP
+    # log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME}...")
+    # (Omitted cluster creation logic for brevity - use your existing gcloud check)
+    # subprocess.run(["gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, "--zone", ZONE], check=True)
+
+
+    # STEP 4: TOPOLOGY INJECTION
     try:
         for topo_file in files:
             fname = os.path.basename(topo_file)
