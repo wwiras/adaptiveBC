@@ -52,7 +52,7 @@ if not os.path.exists(LOG_DIR):
 # 2. Generate the unique filename
 unique_run_id = get_short_id(5)
 timestamp_str = datetime.now(MYT).strftime("%Y%m%d_%H%M%S")
-log_filename = f"orchestrator_{unique_run_id}_{timestamp_str}.log"
+log_filename = f"orchestrator_{timestamp_str}_{unique_run_id}.log"
 
 # 3. Join path: result will be "logs/orchestrator_K9b2X_20260203_001500.log"
 full_log_path = os.path.join(LOG_DIR, log_filename)
@@ -175,19 +175,6 @@ def main():
     if not topology_list: 
         log("❌ No topology files found.")
         return
-
-    # 2. INFRASTRUCTURE SETUP
-    # log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME}...")
-    # try:
-    #     subprocess.run([
-    #         "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
-    #         "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
-    #         "--machine-type", "e2-medium", "--quiet"
-    #     ], check=True)
-    # except subprocess.CalledProcessError:
-    #     log("ℹ️ Cluster setup check complete.")
-    
-    # subprocess.run(["gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, "--zone", ZONE, "--project", PROJECT_ID], check=True)
     
     # 2. INFRASTRUCTURE SETUP
     log("\n" + "="*50)
@@ -198,18 +185,9 @@ def main():
     log(f"   - Machine Type: e2-medium")
     log(f"   - Project ID:   {PROJECT_ID}")
     log(f"   - Image:        {IMAGE_NAME}:{IMAGE_TAG}")
+    log(f"   - Date and Time: {datetime.now(MYT).strftime("%d-%m-%Y at %H:%M:%S")}")
     log("="*50 + "\n")
 
-    # try:
-        # Note: We use the variables here so any change in USER CONFIG reflects in the logs
-        # subprocess.run([
-        #     "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
-        #     "--zone", ZONE, 
-        #     "--num-nodes", str(K8SNODE_COUNT), 
-        #     "--machine-type", "e2-medium", 
-        #     "--quiet"
-        # ], check=True)
-    
     log(f"🔨 Ensuring Cluster {K8SCLUSTER_NAME} (Progress shown below)...")
     try:
         # We added --enable-ip-alias to fix the 'max-pods-per-node' error
@@ -242,10 +220,6 @@ def main():
         "--project", PROJECT_ID
     ], check=True)
    
-    
-
-
-    
 
     # 3. EXPERIMENT LOOP
     try:
@@ -276,10 +250,6 @@ def main():
 
                 if not helper.wait_for_pods_to_be_ready(expected_pods=p2p_nodes):
                     raise Exception("Pods scale-up failed.")
-
-            # # --- B. INJECT TOPOLOGY ---
-            # log(f"💉 Injecting Topology: {filename}")
-            # subprocess.run(f"python3 prepare.py --filename {filename}", shell=True, check=True)
             
             # --- B. INJECT TOPOLOGY ---
             log(f"💉 Injecting Topology: {filename}")
@@ -291,6 +261,7 @@ def main():
                 f"python3 prepare.py --filename {filename}", 
                 shell=True, 
                 check=True,
+                capture_output=False,
                 text=True
             )
             
@@ -302,8 +273,6 @@ def main():
                 # Format: unique_id-cubaan[replicas]-[iteration]
                 # Example: z66ef_BA4-cubaan10-1
                 test_id = f"{unique_id}-cubaan{p2p_nodes}-{run_idx}"
-                # topo['test_id'] = test_id
-                # log(f"topo[{}]= {topo}s...")
                 
                 log(f"\n   🔄 [Run {run_idx}/{NUM_REPEAT_TESTS}] Message: {test_id}")
 
