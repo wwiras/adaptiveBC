@@ -11,6 +11,7 @@ import json
 import uuid
 import string
 import secrets
+import csv
 from datetime import datetime, timezone, timedelta
 
 # ==========================================
@@ -41,7 +42,7 @@ def get_short_id(length=5):
     return ''.join(secrets.choice(characters) for _ in range(length))
 
 # ==========================================
-# 📝 LOGGING SETUP
+# 📝 LOGGING & CSV SETUP
 # ==========================================
 LOG_DIR = "logs"
 if not os.path.exists(LOG_DIR):
@@ -49,8 +50,13 @@ if not os.path.exists(LOG_DIR):
 
 unique_run_id = get_short_id(5)
 timestamp_str = datetime.now(MYT).strftime("%Y%m%d_%H%M%S")
+
+# Filenames linked by the same timestamp/ID
 log_filename = f"orchestrator_{timestamp_str}_{unique_run_id}.log"
+csv_filename = f"orchestrator_{timestamp_str}_{unique_run_id}.csv"
+
 full_log_path = os.path.join(LOG_DIR, log_filename)
+full_csv_path = os.path.join(LOG_DIR, csv_filename)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -148,7 +154,7 @@ def main():
     ROOT_DIR = os.getcwd() 
     test_summary = []  
     
-    # 1. GROUP & SORT TOPOLOGIES
+    # 1. TOPOLOGY SCANNING
     raw_files = glob.glob(os.path.join(TOPOLOGY_FOLDER, "*.json"))
     topology_list = []
 
@@ -165,7 +171,7 @@ def main():
     topology_list.sort(key=lambda x: x['node_count'])
     
     if not topology_list: 
-        log("❌ No topology files found.")
+        log("❌ No topology files found in the /topology folder.")
         return
     
     # 2. INFRASTRUCTURE SETUP
@@ -173,9 +179,9 @@ def main():
     log("🏗️  INFRASTRUCTURE CONFIGURATION")
     log(f"   - Cluster Name: {K8SCLUSTER_NAME}")
     log(f"   - Nodes: {K8SNODE_COUNT}")
-    log(f"   - Machine Type: e2-medium")
-    log(f"   - Project ID:   {PROJECT_ID}")
-    log(f"   - Date and Time: {datetime.now(MYT).strftime('%d-%m-%Y at %H:%M:%S')}")
+    log(f"   - Zone: {ZONE}")
+    log(f"   - Project: {PROJECT_ID}")
+    log(f"   - Time (MYT): {datetime.now(MYT).strftime('%d-%m-%Y %H:%M:%S')}")
     log("="*50 + "\n")
 
     try:
@@ -189,7 +195,7 @@ def main():
         log("✅ Cluster created successfully.")
     except subprocess.CalledProcessError as e:
         if "already exists" in e.stderr.lower():
-            log("ℹ️ Cluster already exists. Proceeding...")
+            log("ℹ️ Cluster already exists. Fetching credentials...")
         else:
             log(f"❌ CRITICAL ERROR: {e.stderr}")
             sys.exit(1) 
@@ -206,14 +212,16 @@ def main():
             p2p_nodes = topo['node_count']
             unique_id = get_short_id(5)
             
-            # Format: YSNZz-cubaan10
+            # This is the base ID used for extraction in BigQuery
             base_test_id = f"{unique_id}-cubaan{p2p_nodes}"
 
-            log(f"\n[{i+1}/{len(topology_list)}] 🚀 STARTING TOPOLOGY: {filename} with ID: {base_test_id}")
+            log(f"\n[{i+1}/{len(topology_list)}] 🚀 TOPOLOGY: {filename}")
+            log(f"   👉 Base Test ID: {base_test_id}")
 
             # --- A. CONDITIONAL HELM DEPLOYMENT ---
             current_workload = helper.get_current_running_pod_count()
             if current_workload != p2p_nodes:
+                log(f"🔄 Scaling pods from {current_workload} to {p2p_nodes}...")
                 try:
                     helper.run_command("helm uninstall simcn", suppress_output=True)
                     time.sleep(5) 
@@ -233,11 +241,12 @@ def main():
             # --- B. INJECT TOPOLOGY ---
             subprocess.run(f"python3 prepare.py --filename {filename}", shell=True, check=True)
 
-            # Record once for summary table
+            # Record test metadata
             test_summary.append({
                 "test_id": base_test_id,
                 "topology": filename,
-                "pods": p2p_nodes
+                "pods": p2p_nodes,
+                "timestamp": datetime.now(MYT).strftime('%Y-%m-%d %H:%M:%S')
             })
 
             # --- C. REPEAT TEST LOOP ---
@@ -251,31 +260,40 @@ def main():
                 time.sleep(EXPERIMENT_DURATION + 2)
 
     except Exception as e:
-        log(f"❌ CRITICAL ERROR: {e}")
+        log(f"❌ CRITICAL ERROR DURING EXPERIMENT: {e}")
     
     finally:
         log("\n🧹 Starting Post-Experiment Cleanup...")
         try:
             subprocess.run(["helm", "uninstall", "simcn"], check=False)
             subprocess.run(["gcloud", "container", "clusters", "delete", K8SCLUSTER_NAME, 
-                            "--zone", ZONE, "--project", PROJECT_ID, "--quiet"], check=True)
+                            "--zone", ZONE, "--project", PROJECT_ID, "--quiet"], check=False)
         except: pass
 
         # ==========================================
-        # 📊 FINAL TEST SUMMARY
+        # 📊 FINAL TEST SUMMARY & CSV EXPORT
         # ==========================================
-        log("\n" + "="*95)
+        log("\n" + "="*80)
         log("📋 FINAL TEST EXECUTION SUMMARY")
-        log(f"{'TEST_ID':<30} | {'TOPOLOGY':<40} | {'NODES':<5} ")
-        log("-" * 95)
+        log(f"{'TEST_ID':<30} | {'TOPOLOGY':<40} | {'PODS':<5}")
+        log("-" * 80)
         
-        for entry in test_summary:
-            fname = entry['topology']            
-            log(f"{entry['test_id']:<30} | "
-                f"{fname:<25} | "
-                f"{entry['pods']:<5} ")
+        try:
+            with open(full_csv_path, mode='w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=["test_id", "topology", "pods", "timestamp"])
+                writer.writeheader()
+                for entry in test_summary:
+                    # Print to logs
+                    log(f"{entry['test_id']:<30} | {entry['topology']:<40} | {entry['pods']:<5}")
+                    # Write to CSV
+                    writer.writerow(entry)
+            
+            log("-" * 80)
+            log(f"✅ CSV Exported to: {full_csv_path}")
+        except Exception as e:
+            log(f"❌ Error writing CSV: {e}")
         
-        log("="*95)
+        log("="*80)
         log("🏁 Done.")
 
 if __name__ == "__main__":

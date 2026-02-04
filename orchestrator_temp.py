@@ -146,7 +146,7 @@ class ExperimentHelper:
 def main():
     helper = ExperimentHelper()
     ROOT_DIR = os.getcwd() 
-    test_summary = []  # To track results for the final report
+    test_summary = []  
     
     # 1. GROUP & SORT TOPOLOGIES
     raw_files = glob.glob(os.path.join(TOPOLOGY_FOLDER, "*.json"))
@@ -172,9 +172,10 @@ def main():
     log("\n" + "="*50)
     log("🏗️  INFRASTRUCTURE CONFIGURATION")
     log(f"   - Cluster Name: {K8SCLUSTER_NAME}")
-    log(f"   - Nodes: {K8SNODE_COUNT} (GKE Nodes)")
-    log(f"   - Image: {IMAGE_NAME}:{IMAGE_TAG}")
-    log(f"   - Time:  {datetime.now(MYT).strftime('%d-%m-%Y at %H:%M:%S')}")
+    log(f"   - Nodes: {K8SNODE_COUNT}")
+    log(f"   - Machine Type: e2-medium")
+    log(f"   - Project ID:   {PROJECT_ID}")
+    log(f"   - Date and Time: {datetime.now(MYT).strftime('%d-%m-%Y at %H:%M:%S')}")
     log("="*50 + "\n")
 
     try:
@@ -204,15 +205,19 @@ def main():
             filename = topo['filename']
             p2p_nodes = topo['node_count']
             unique_id = get_short_id(5)
+            
+            # Format: YSNZz-cubaan10
+            base_test_id = f"{unique_id}-cubaan{p2p_nodes}"
 
-            log(f"\n[{i+1}/{len(topology_list)}] 🚀 TOPOLOGY: {filename} (ID:{unique_id})")
+            log(f"\n[{i+1}/{len(topology_list)}] 🚀 STARTING TOPOLOGY: {filename} with ID: {base_test_id}")
 
-            # --- A. HELM DEPLOYMENT ---
+            # --- A. CONDITIONAL HELM DEPLOYMENT ---
             current_workload = helper.get_current_running_pod_count()
             if current_workload != p2p_nodes:
-                try: helper.run_command("helm uninstall simcn", suppress_output=True)
+                try:
+                    helper.run_command("helm uninstall simcn", suppress_output=True)
+                    time.sleep(5) 
                 except: pass
-                time.sleep(5)
 
                 os.chdir(HELM_CHART_FOLDER)
                 try:
@@ -228,22 +233,21 @@ def main():
             # --- B. INJECT TOPOLOGY ---
             subprocess.run(f"python3 prepare.py --filename {filename}", shell=True, check=True)
 
+            # Record once for summary table
+            test_summary.append({
+                "test_id": base_test_id,
+                "topology": filename,
+                "pods": p2p_nodes
+            })
+
             # --- C. REPEAT TEST LOOP ---
             for run_idx in range(1, NUM_REPEAT_TESTS + 1):
-                test_id = f"{unique_id}-cubaan{p2p_nodes}-{run_idx}"
-                log(f"   🔄 [Run {run_idx}/{NUM_REPEAT_TESTS}] Message: {test_id}")
-
-                # Save metadata for summary
-                test_summary.append({
-                    "test_id": test_id,
-                    "topology": filename,
-                    "pods": p2p_nodes
-                })
-
+                message = f"{base_test_id}-{run_idx}"
+                log(f"   🔄 [Run {run_idx}/{NUM_REPEAT_TESTS}] Message: {message}")
                 pod = helper.select_random_pod()
-                helper.trigger_gossip_hybrid(pod, test_id, cycle_index=run_idx)
+                helper.trigger_gossip_hybrid(pod, message, cycle_index=run_idx)
 
-                log(f"      ⏳ Propagating {EXPERIMENT_DURATION}s...")
+                log(f"      ⏳ Propagating for {EXPERIMENT_DURATION}s...")
                 time.sleep(EXPERIMENT_DURATION + 2)
 
     except Exception as e:
@@ -254,7 +258,7 @@ def main():
         try:
             subprocess.run(["helm", "uninstall", "simcn"], check=False)
             subprocess.run(["gcloud", "container", "clusters", "delete", K8SCLUSTER_NAME, 
-                            "--zone", ZONE, "--project", PROJECT_ID, "--quiet"], check=False)
+                            "--zone", ZONE, "--project", PROJECT_ID, "--quiet"], check=True)
         except: pass
 
         # ==========================================
@@ -262,23 +266,17 @@ def main():
         # ==========================================
         log("\n" + "="*95)
         log("📋 FINAL TEST EXECUTION SUMMARY")
-        log(f"{'TEST_ID':<30} | {'TOPOLOGY':<25} | {'NODES':<5} | {'K':<3} | {'D':<3}")
+        log(f"{'TEST_ID':<30} | {'TOPOLOGY':<40} | {'NODES':<5} ")
         log("-" * 95)
         
         for entry in test_summary:
-            fname = entry['topology']
-            # Extraction logic for clusters (k) and degrees (d) from filename
-            k_val = re.search(r"k(\d+)", fname)
-            d_val = re.search(r"d(\d+)", fname)
-            
+            fname = entry['topology']            
             log(f"{entry['test_id']:<30} | "
                 f"{fname:<25} | "
-                f"{entry['pods']:<5} | "
-                f"{(k_val.group(1) if k_val else '?'):<3} | "
-                f"{(d_val.group(1) if d_val else '?'):<3}")
+                f"{entry['pods']:<5} ")
         
         log("="*95)
-        log(f"🏁 Done. Log saved to {full_log_path}")
+        log("🏁 Done.")
 
 if __name__ == "__main__":
     main()
