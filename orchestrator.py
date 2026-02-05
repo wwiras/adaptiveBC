@@ -186,20 +186,20 @@ def main():
 
     try:
         # with autoscaling
-        # subprocess.run([
-        #     "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
-        #     "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
-        #     "--machine-type", "e2-medium", "--enable-ip-alias",
-        #     "--max-pods-per-node", "40", "--enable-autoscaling",
-        #     "--min-nodes", "1", "--max-nodes", "100", "--quiet"
-        # ], check=True, capture_output=True, text=True)
-        
-        # without scaling
         subprocess.run([
             "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
             "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
-            "--machine-type", "e2-medium","--quiet"
+            "--machine-type", "e2-medium", "--enable-ip-alias",
+            "--max-pods-per-node", "40", "--enable-autoscaling",
+            "--min-nodes", "1", "--max-nodes", "100", "--quiet"
         ], check=True, capture_output=True, text=True)
+        
+        # without scaling
+        # subprocess.run([
+        #     "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
+        #     "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
+        #     "--machine-type", "e2-medium","--quiet"
+        # ], check=True, capture_output=True, text=True)
         
         log("✅ Cluster created successfully.")
     except subprocess.CalledProcessError as e:
