@@ -196,18 +196,18 @@ def main():
         # ], check=True, capture_output=True, text=True)
         
         # without scaling
-        # subprocess.run([
-        #     "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
-        #     "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
-        #     "--machine-type", "e2-medium","--quiet"
-        # ], check=True, capture_output=True, text=True)
-        
-        # without scaling and e2-small
         subprocess.run([
             "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
             "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
-            "--machine-type", "e2-small","--quiet"
+            "--machine-type", "e2-medium","--quiet"
         ], check=True, capture_output=True, text=True)
+        
+        # without scaling and e2-small
+        # subprocess.run([
+        #     "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
+        #     "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
+        #     "--machine-type", "e2-small","--quiet"
+        # ], check=True, capture_output=True, text=True)
         
         log("✅ Cluster created successfully.")
     except subprocess.CalledProcessError as e:
