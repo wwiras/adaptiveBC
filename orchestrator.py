@@ -25,17 +25,20 @@ parser = argparse.ArgumentParser(description="Gossip Experiment Orchestrator")
 parser.add_argument("--k8s_nodes", type=int, default=3, help="GKE worker nodes (default: 3)")
 parser.add_argument("--p2p_nodes", type=int, default=10, help="Target P2P pods (default: 10)")
 parser.add_argument("--autoscale", type=str2bool, default=False, help="Enable GKE autoscaling (default: false)")
+# New optional parameters
+parser.add_argument("--project_id", type=str, default="stoked-cosine-415611", help="GCP Project ID")
+parser.add_argument("--zone", type=str, default="us-central1-c", help="GCP Zone")
 
 args = parser.parse_args()
 K8S_NODES = args.k8s_nodes
 P2P_TARGET = args.p2p_nodes
 AUTOSCALE_ENABLED = args.autoscale
+PROJECT_ID = args.project_id
+ZONE = args.zone
 
 # ==========================================
 # 🔧 USER CONFIGURATION
 # ==========================================
-PROJECT_ID = "stoked-cosine-415611"
-ZONE = "us-central1-c"
 K8SCLUSTER_NAME = "bcgossip-cluster"
 IMAGE_NAME = "wwiras/simcl2"
 IMAGE_TAG = "v18"
@@ -125,13 +128,14 @@ def main():
     log(f"   - Execution Time: {datetime.now(MYT).strftime('%d-%m-%Y %H:%M:%S')}")
     log("="*50 + "\n")
 
-    check_cmd = f"gcloud container clusters list --filter='name:{K8SCLUSTER_NAME}' --format='value(name)' --zone {ZONE}"
+    check_cmd = f"gcloud container clusters list --project {PROJECT_ID} --filter='name:{K8SCLUSTER_NAME}' --format='value(name)' --zone {ZONE}"
     existing = subprocess.run(check_cmd, shell=True, capture_output=True, text=True).stdout.strip()
 
     if not existing:
         log(f"🔨 Cluster not found. Initiating creation (this takes 5-8 mins)...")
         create_cmd = [
             "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
+            "--project", PROJECT_ID,
             "--zone", ZONE, "--num-nodes", str(K8S_NODES),
             "--machine-type", "e2-medium", "--enable-ip-alias", "--quiet"
         ]
