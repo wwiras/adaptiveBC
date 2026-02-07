@@ -40,7 +40,7 @@ PROJECT_ID = "stoked-cosine-415611"
 ZONE = "us-central1-c"
 K8SCLUSTER_NAME = "bcgossip-cluster"
 IMAGE_NAME = "wwiras/simcl2"
-IMAGE_TAG = "v17"
+IMAGE_TAG = "v18"
 TOPOLOGY_FOLDER = "topology"
 HELM_CHART_FOLDER = "simcl2" 
 
@@ -143,9 +143,11 @@ def main():
     log("\n" + "="*50)
     log("🏗️  INFRASTRUCTURE CONFIGURATION")
     log(f"   - K8s Nodes: {K8S_NODES}")
+    log(f"   - Cluster Name: {K8SCLUSTER_NAME}")
     log(f"   - P2P Target: {P2P_TARGET}")
     log(f"   - Autoscale:  {AUTOSCALE_ENABLED}")
-    log(f"   - Project:    {PROJECT_ID}")
+    log(f"   - Project: {PROJECT_ID}")
+    log(f"   - Zone: {ZONE}")
     log("="*50 + "\n")
 
     if not create_cluster_async(K8SCLUSTER_NAME, ZONE, K8S_NODES, AUTOSCALE_ENABLED):

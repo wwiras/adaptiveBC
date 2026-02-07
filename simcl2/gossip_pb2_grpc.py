@@ -35,12 +35,12 @@ class GossipServiceStub(object):
             channel: A grpc.Channel.
         """
         self.SendMessage = channel.unary_unary(
-                '/gossip.GossipService/SendMessage',
+                '/GossipService/SendMessage',
                 request_serializer=gossip__pb2.GossipMessage.SerializeToString,
                 response_deserializer=gossip__pb2.Acknowledgment.FromString,
                 _registered_method=True)
         self.UpdateNeighbors = channel.unary_unary(
-                '/gossip.GossipService/UpdateNeighbors',
+                '/GossipService/UpdateNeighbors',
                 request_serializer=gossip__pb2.NeighborList.SerializeToString,
                 response_deserializer=gossip__pb2.Acknowledgment.FromString,
                 _registered_method=True)
@@ -56,7 +56,7 @@ class GossipServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def UpdateNeighbors(self, request, context):
-        """Accepts the list of neighbors directly instead of google.protobuf.Empty
+        """Accepts the list of neighbors directly for rapid topology injection
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -77,9 +77,9 @@ def add_GossipServiceServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'gossip.GossipService', rpc_method_handlers)
+            'GossipService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('gossip.GossipService', rpc_method_handlers)
+    server.add_registered_method_handlers('GossipService', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -100,7 +100,7 @@ class GossipService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/gossip.GossipService/SendMessage',
+            '/GossipService/SendMessage',
             gossip__pb2.GossipMessage.SerializeToString,
             gossip__pb2.Acknowledgment.FromString,
             options,
@@ -127,7 +127,7 @@ class GossipService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/gossip.GossipService/UpdateNeighbors',
+            '/GossipService/UpdateNeighbors',
             gossip__pb2.NeighborList.SerializeToString,
             gossip__pb2.Acknowledgment.FromString,
             options,
