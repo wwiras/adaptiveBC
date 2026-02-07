@@ -4,218 +4,306 @@ import time
 import subprocess
 import re
 import random
+import select
 import logging
 import sys
+import json
+import uuid
 import string
 import secrets
 import csv
-import argparse
 from datetime import datetime, timezone, timedelta
-
-# ==========================================
-# 🔧 PARAMETER PARSING
-# ==========================================
-def str2bool(v):
-    if isinstance(v, bool): return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'): return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'): return False
-    else: raise argparse.ArgumentTypeError('Boolean value expected.')
-
-parser = argparse.ArgumentParser(description="Gossip Experiment Orchestrator")
-parser.add_argument("--k8s_nodes", type=int, default=3, help="GKE worker nodes (default: 3)")
-parser.add_argument("--p2p_nodes", type=int, default=10, help="Target P2P pods (default: 10)")
-parser.add_argument("--autoscale", type=str2bool, default=False, help="Enable GKE autoscaling (default: false)")
-# New optional parameters
-parser.add_argument("--project_id", type=str, default="stoked-cosine-415611", help="GCP Project ID")
-parser.add_argument("--zone", type=str, default="us-central1-c", help="GCP Zone")
-
-args = parser.parse_args()
-K8S_NODES = args.k8s_nodes
-P2P_TARGET = args.p2p_nodes
-AUTOSCALE_ENABLED = args.autoscale
-PROJECT_ID = args.project_id
-ZONE = args.zone
 
 # ==========================================
 # 🔧 USER CONFIGURATION
 # ==========================================
+PROJECT_ID = "stoked-cosine-415611"
+ZONE = "us-central1-c"
 K8SCLUSTER_NAME = "bcgossip-cluster"
+K8SNODE_COUNT = 5  
+
 IMAGE_NAME = "wwiras/simcl2"
-IMAGE_TAG = "v18"
+IMAGE_TAG = "v17"
 TOPOLOGY_FOLDER = "topology"
 HELM_CHART_FOLDER = "simcl2" 
 
-EXPERIMENT_DURATION = 10    
-BASE_TRIGGER_TIMEOUT = 12   
+# EXPERIMENT_DURATION = 10
+EXPERIMENT_DURATION = 3    
+BASE_TRIGGER_TIMEOUT = 10   
+TIMEOUT_INCREMENT = 2       
 NUM_REPEAT_TESTS = 3        
+
+# ==========================================
+# 🛠️ HELPERS & TIMEZONE
+# ==========================================
 MYT = timezone(timedelta(hours=8))
 
+def get_short_id(length=5):
+    characters = string.digits + string.ascii_letters
+    return ''.join(secrets.choice(characters) for _ in range(length))
+
 # ==========================================
-# 📝 LOGGING SETUP
+# 📝 LOGGING & CSV SETUP
 # ==========================================
 LOG_DIR = "logs"
-os.makedirs(LOG_DIR, exist_ok=True)
-unique_run_id = ''.join(secrets.choice(string.digits + string.ascii_letters) for _ in range(5))
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+unique_run_id = get_short_id(5)
 timestamp_str = datetime.now(MYT).strftime("%Y%m%d_%H%M%S")
 
+# Filenames linked by the same timestamp/ID
 log_filename = f"orchestrator_{timestamp_str}_{unique_run_id}.log"
 csv_filename = f"orchestrator_{timestamp_str}_{unique_run_id}.csv"
+
 full_log_path = os.path.join(LOG_DIR, log_filename)
 full_csv_path = os.path.join(LOG_DIR, csv_filename)
 
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S",
-                    handlers=[logging.FileHandler(full_log_path), logging.StreamHandler()])
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[
+        logging.FileHandler(full_log_path), 
+        logging.StreamHandler()
+    ]
+)
+
 logging.Formatter.converter = lambda *args: datetime.now(MYT).timetuple()
 
-def log(msg): 
+def log(msg):
     logging.info(msg)
-    for handler in logging.getLogger().handlers:
-        handler.flush()
 
 # ==========================================
-# 🛠️ GOSSIP HELPERS
+# 🛠️ HELPER CLASS
 # ==========================================
-def select_random_pod():
-    cmd = "kubectl get pods -l app=bcgossip --no-headers | grep Running | awk '{print $1}'"
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    pod_list = result.stdout.strip().split()
-    return random.choice(pod_list) if pod_list else None
+class ExperimentHelper:
+    def run_command(self, command, shell=True, suppress_output=False, capture=True):
+        try:
+            result = subprocess.run(
+                command, 
+                check=True, 
+                text=True, 
+                capture_output=capture, 
+                shell=shell
+            )
+            return result.stdout.strip() if capture else ""
+        except subprocess.CalledProcessError as e:
+            if not suppress_output:
+                log(f"❌ Error executing: {e.cmd}\nStderr: {getattr(e, 'stderr', 'Check console')}")
+            raise e
 
-def trigger_gossip_hybrid(pod_name, test_id):
-    log(f"      ⚡ Triggering {pod_name} (Msg: {test_id})")
-    cmd = ['kubectl', 'exec', pod_name, '--', 'python3', 'start.py', '--message', test_id]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=BASE_TRIGGER_TIMEOUT)
-        if "Received acknowledgment" in proc.stdout:
-            log(f"      ✅ ACK RECEIVED")
-            return True
-        log(f"      ⚠️ No ACK. Pod said: {proc.stdout.strip()[:50]}")
-    except subprocess.TimeoutExpired:
-        log("      ⏱️ Trigger Timeout")
-    return False
+    def get_current_running_pod_count(self, namespace='default'):
+        try:
+            cmd = f"kubectl get pods -n {namespace} -l app=bcgossip --no-headers | grep Running | wc -l"
+            count = self.run_command(cmd, suppress_output=True)
+            return int(count) if count else 0
+        except:
+            return 0
 
-def wait_for_pods_ready(expected, timeout=300):
-    log(f"⏳ Waiting for {expected} pods to reach 'Running' state...")
-    start = time.time()
-    while time.time() - start < timeout:
-        cmd = "kubectl get pods -l app=bcgossip --no-headers | grep Running | wc -l"
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        count = int(res.stdout.strip() or 0)
-        if count >= expected:
-            log(f"✅ All {expected} pods are READY.")
-            return True
-        time.sleep(10)
-    return False
+    def wait_for_pods_to_be_ready(self, namespace='default', expected_pods=0, timeout=600):
+        log(f"⏳ Waiting for {expected_pods} pods to reach Running state...")
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            running_pods = self.get_current_running_pod_count(namespace)
+            if running_pods >= expected_pods:
+                log(f"✅ Real-time Check: {running_pods}/{expected_pods} pods are READY.")
+                return True
+            time.sleep(5)
+        return False
+
+    def select_random_pod(self):
+        cmd = "kubectl get pods -l app=bcgossip --no-headers | grep Running | awk '{print $1}'"
+        stdout = self.run_command(cmd)
+        pod_list = stdout.split()
+        if not pod_list: raise Exception("No running pods found.")
+        return random.choice(pod_list)
+
+    def trigger_gossip_hybrid(self, pod_name, test_id, cycle_index):
+        current_timeout = BASE_TRIGGER_TIMEOUT + ((cycle_index - 1) * TIMEOUT_INCREMENT)
+        log(f"⚡ Triggering Gossip in {pod_name} (Msg: {test_id})")
+        
+        cmd = ['kubectl', 'exec', pod_name, '--', 'python3', 'start.py', '--message', test_id]
+        start_time = time.time()
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+
+        while True:
+            if time.time() - start_time > current_timeout:
+                log(f"⏱️ Trigger Timeout ({current_timeout}s) reached.")
+                process.kill()
+                return False 
+
+            reads = [process.stdout.fileno()]
+            ready = select.select(reads, [], [], 1.0)[0]
+
+            if ready:
+                line = process.stdout.readline()
+                if not line: break 
+                if "Received acknowledgment" in line and test_id in line:
+                    log(f"✅ VALID ACK RECEIVED for {test_id}!")
+                    process.terminate() 
+                    return True
+            
+            if process.poll() is not None: break
+        return False
 
 # ==========================================
 # 🚀 MAIN ORCHESTRATOR
 # ==========================================
 def main():
+    helper = ExperimentHelper()
+    ROOT_DIR = os.getcwd() 
+    test_summary = []  
+    
+    # 1. TOPOLOGY SCANNING
     raw_files = glob.glob(os.path.join(TOPOLOGY_FOLDER, "*.json"))
-    topology_list = [f for f in raw_files if f"nodes{P2P_TARGET}" in f]
+    topology_list = []
 
-    if not topology_list:
-        sys.exit(f"❌ No topology files found for {P2P_TARGET} nodes in /{TOPOLOGY_FOLDER}")
+    for filepath in raw_files:
+        filename = os.path.basename(filepath)
+        node_match = re.search(r"nodes(\d+)", filename)
+        node_count = int(node_match.group(1)) if node_match else 0
+        topology_list.append({
+            "path": filepath,
+            "filename": filename,
+            "node_count": node_count
+        })
 
+    topology_list.sort(key=lambda x: x['node_count'])
+    
+    if not topology_list: 
+        log("❌ No topology files found in the /topology folder.")
+        return
+    
     # 2. INFRASTRUCTURE SETUP
     log("\n" + "="*50)
     log("🏗️  INFRASTRUCTURE CONFIGURATION")
-    log(f"   - Cluster Name:   {K8SCLUSTER_NAME}")
-    log(f"   - Node Count:     {K8S_NODES} (Autoscale: {AUTOSCALE_ENABLED})")
-    log(f"   - Target P2P:     {P2P_TARGET} pods")
-    log(f"   - Project ID:     {PROJECT_ID}")
-    log(f"   - Zone:           {ZONE}")
-    log(f"   - Execution Time: {datetime.now(MYT).strftime('%d-%m-%Y %H:%M:%S')}")
+    log(f"   - Cluster Name: {K8SCLUSTER_NAME}")
+    log(f"   - Nodes: {K8SNODE_COUNT}")
+    log(f"   - Zone: {ZONE}")
+    log(f"   - Project: {PROJECT_ID}")
+    log(f"   - Time (MYT): {datetime.now(MYT).strftime('%d-%m-%Y %H:%M:%S')}")
     log("="*50 + "\n")
 
-    check_cmd = f"gcloud container clusters list --project {PROJECT_ID} --filter='name:{K8SCLUSTER_NAME}' --format='value(name)' --zone {ZONE}"
-    existing = subprocess.run(check_cmd, shell=True, capture_output=True, text=True).stdout.strip()
-
-    if not existing:
-        log(f"🔨 Cluster not found. Initiating creation (this takes 5-8 mins)...")
-        create_cmd = [
-            "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
-            "--project", PROJECT_ID,
-            "--zone", ZONE, "--num-nodes", str(K8S_NODES),
-            "--machine-type", "e2-medium", "--enable-ip-alias", "--quiet"
-        ]
-        if AUTOSCALE_ENABLED:
-            create_cmd.extend(["--enable-autoscaling", "--min-nodes", "1", "--max-nodes", "100"])
-        
-        try:
-            subprocess.run(create_cmd, check=True)
-            log("✅ Cluster created successfully.")
-        except subprocess.CalledProcessError:
-            sys.exit("❌ Infrastructure failure during creation.")
-    else:
-        log(f"ℹ️  Cluster '{K8SCLUSTER_NAME}' already exists. Reusing infrastructure.")
-
-    subprocess.run(["gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, 
-                    "--zone", ZONE, "--project", PROJECT_ID], check=True, capture_output=True)
-
-    test_summary = []
     try:
-        for filepath in topology_list:
-            filename = os.path.basename(filepath)
-            unique_id = ''.join(secrets.choice(string.digits + string.ascii_letters) for _ in range(5))
-            base_test_id = f"{unique_id}-cubaan{P2P_TARGET}"
+        # with autoscaling
+        subprocess.run([
+            "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
+            "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
+            "--machine-type", "e2-medium", "--enable-ip-alias",
+            "--max-pods-per-node", "40", "--enable-autoscaling",
+            "--min-nodes", "1", "--max-nodes", "100", "--quiet"
+        ], check=True, capture_output=True, text=True)
+        
+        # without scaling
+        # subprocess.run([
+        #     "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
+        #     "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
+        #     "--machine-type", "e2-medium","--quiet"
+        # ], check=True, capture_output=True, text=True)
+        
+        log("✅ Cluster created successfully.")
+    except subprocess.CalledProcessError as e:
+        if "already exists" in e.stderr.lower():
+            log("ℹ️ Cluster already exists. Fetching credentials...")
+        else:
+            log(f"❌ CRITICAL ERROR: {e.stderr}")
+            sys.exit(1) 
 
-            log(f"\n🚀 STARTING TOPOLOGY: {filename} (ID: {base_test_id})")
+    subprocess.run([
+        "gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, 
+        "--zone", ZONE, "--project", PROJECT_ID
+    ], check=True)
+
+    # 3. EXPERIMENT LOOP
+    try:
+        for i, topo in enumerate(topology_list):
+            filename = topo['filename']
+            p2p_nodes = topo['node_count']
+            unique_id = get_short_id(5)
             
-            log(f"🔄 Helm: Reinstalling simcn for {P2P_TARGET} pods...")
-            subprocess.run(["helm", "uninstall", "simcn"], capture_output=True)
-            time.sleep(5)
+            # This is the base ID used for extraction in BigQuery
+            base_test_id = f"{unique_id}-cubaan{p2p_nodes}"
+
+            log(f"\n[{i+1}/{len(topology_list)}] 🚀 TOPOLOGY: {filename}")
+            log(f"   👉 Base Test ID: {base_test_id}")
+
+            # --- A. CONDITIONAL HELM DEPLOYMENT ---
+            current_workload = helper.get_current_running_pod_count()
+            if current_workload != p2p_nodes:
+                log(f"🔄 Scaling pods from {current_workload} to {p2p_nodes}...")
+                try:
+                    helper.run_command("helm uninstall simcn", suppress_output=True)
+                    time.sleep(5) 
+                except: pass
+
+                os.chdir(HELM_CHART_FOLDER)
+                try:
+                    helm_cmd = (f"helm install simcn ./chartsim --set testType=default,"
+                                f"totalNodes={p2p_nodes},image.tag={IMAGE_TAG},image.name={IMAGE_NAME}")
+                    helper.run_command(helm_cmd, capture=False)
+                finally:
+                    os.chdir(ROOT_DIR)
+
+                if not helper.wait_for_pods_to_be_ready(expected_pods=p2p_nodes):
+                    raise Exception("Pods scale-up failed.")
             
-            os.chdir(HELM_CHART_FOLDER)
-            subprocess.run(f"helm install simcn ./chartsim --set totalNodes={P2P_TARGET},image.tag={IMAGE_TAG}", 
-                           shell=True, check=True, capture_output=True)
-            os.chdir("..")
-
-            if not wait_for_pods_ready(P2P_TARGET):
-                log(f"❌ Pods failed to initialize for {filename}. Skipping.")
-                continue
-
-            log(f"💉 Injecting Topology: {filename}")
+            # --- B. INJECT TOPOLOGY ---
             subprocess.run(f"python3 prepare.py --filename {filename}", shell=True, check=True)
 
+            # Record test metadata
+            test_summary.append({
+                "test_id": base_test_id,
+                "topology": filename,
+                "pods": p2p_nodes,
+                "timestamp": datetime.now(MYT).strftime('%Y-%m-%d %H:%M:%S')
+            })
+
+            # --- C. REPEAT TEST LOOP ---
             for run_idx in range(1, NUM_REPEAT_TESTS + 1):
-                msg = f"{base_test_id}-{run_idx}"
-                log(f"   🔄 Run {run_idx}/{NUM_REPEAT_TESTS}: {msg}")
-                
-                target_pod = select_random_pod()
-                if target_pod:
-                    if trigger_gossip_hybrid(target_pod, msg):
-                        log(f"      ⏳ Propagating for {EXPERIMENT_DURATION}s...")
-                        time.sleep(EXPERIMENT_DURATION)
-                        
-                        test_summary.append({
-                            "test_id": msg, 
-                            "topology": filename, 
-                            "pods": P2P_TARGET, 
-                            "timestamp": datetime.now(MYT).strftime('%Y-%m-%d %H:%M:%S')
-                        })
-                else:
-                    log("      ❌ Error: No running pods found to trigger.")
-                
-                time.sleep(2)
+                message = f"{base_test_id}-{run_idx}"
+                log(f"   🔄 [Run {run_idx}/{NUM_REPEAT_TESTS}] Message: {message}")
+                pod = helper.select_random_pod()
+                helper.trigger_gossip_hybrid(pod, message, cycle_index=run_idx)
+
+                log(f"      ⏳ Propagating for {EXPERIMENT_DURATION}s...")
+                time.sleep(EXPERIMENT_DURATION + 2)
 
     except Exception as e:
-        log(f"❌ ERROR DURING LOOP: {e}")
+        log(f"❌ CRITICAL ERROR DURING EXPERIMENT: {e}")
+    
     finally:
-        log("\n🧹 CLEANUP: Deleting Helm release and Cluster...")
+        log("\n🧹 Starting Post-Experiment Cleanup...")
         try:
-            subprocess.run(["helm", "uninstall", "simcn"], capture_output=True)
+            subprocess.run(["helm", "uninstall", "simcn"], check=False)
             subprocess.run(["gcloud", "container", "clusters", "delete", K8SCLUSTER_NAME, 
-                            "--zone", ZONE, "--project", PROJECT_ID, "--quiet", "--async"], check=False)
-            log("🚮 Cluster deletion requested (GCP is handling it in background).")
+                            "--zone", ZONE, "--project", PROJECT_ID, "--quiet"], check=False)
         except: pass
 
-        with open(full_csv_path, mode='w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=["test_id", "topology", "pods", "timestamp"])
-            writer.writeheader()
-            writer.writerows(test_summary)
+        # ==========================================
+        # 📊 FINAL TEST SUMMARY & CSV EXPORT
+        # ==========================================
+        log("\n" + "="*80)
+        log("📋 FINAL TEST EXECUTION SUMMARY")
+        log(f"{'TEST_ID':<30} | {'TOPOLOGY':<40} | {'PODS':<5}")
+        log("-" * 80)
         
-        log(f"📊 Summary exported to: {full_csv_path}")
+        try:
+            with open(full_csv_path, mode='w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=["test_id", "topology", "pods", "timestamp"])
+                writer.writeheader()
+                for entry in test_summary:
+                    # Print to logs
+                    log(f"{entry['test_id']:<30} | {entry['topology']:<40} | {entry['pods']:<5}")
+                    # Write to CSV
+                    writer.writerow(entry)
+            
+            log("-" * 80)
+            log(f"✅ CSV Exported to: {full_csv_path}")
+        except Exception as e:
+            log(f"❌ Error writing CSV: {e}")
+        
+        log("="*80)
         log("🏁 Done.")
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
 syntax = "proto3";
 
-// We removed 'package gossip;' to ensure messages like 'Neighbor' 
-// are accessible directly as gossip_pb2.Neighbor in Python.
+package gossip;
 
 // Protobuf message for gossip communication
 message GossipMessage {
@@ -28,7 +27,6 @@ message NeighborList {
 
 service GossipService {
   rpc SendMessage (GossipMessage) returns (Acknowledgment);
-  
-  // Accepts the list of neighbors directly for rapid topology injection
+  // Accepts the list of neighbors directly instead of google.protobuf.Empty
   rpc UpdateNeighbors (NeighborList) returns (Acknowledgment);
 }

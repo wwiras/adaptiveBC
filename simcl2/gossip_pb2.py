@@ -24,21 +24,21 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cgossip.proto\"o\n\rGossipMessage\x12\x0f\n\x07message\x18\x01 \x01(\t\x12\x11\n\tsender_id\x18\x02 \x01(\t\x12\x11\n\ttimestamp\x18\x03 \x01(\x03\x12\x12\n\nlatency_ms\x18\x04 \x01(\x01\x12\x13\n\x0bround_count\x18\x05 \x01(\x05\"!\n\x0e\x41\x63knowledgment\x12\x0f\n\x07\x64\x65tails\x18\x01 \x01(\t\"*\n\x08Neighbor\x12\x0e\n\x06pod_ip\x18\x01 \x01(\t\x12\x0e\n\x06weight\x18\x02 \x01(\x01\",\n\x0cNeighborList\x12\x1c\n\tneighbors\x18\x01 \x03(\x0b\x32\t.Neighbor2r\n\rGossipService\x12.\n\x0bSendMessage\x12\x0e.GossipMessage\x1a\x0f.Acknowledgment\x12\x31\n\x0fUpdateNeighbors\x12\r.NeighborList\x1a\x0f.Acknowledgmentb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cgossip.proto\x12\x06gossip\"o\n\rGossipMessage\x12\x0f\n\x07message\x18\x01 \x01(\t\x12\x11\n\tsender_id\x18\x02 \x01(\t\x12\x11\n\ttimestamp\x18\x03 \x01(\x03\x12\x12\n\nlatency_ms\x18\x04 \x01(\x01\x12\x13\n\x0bround_count\x18\x05 \x01(\x05\"!\n\x0e\x41\x63knowledgment\x12\x0f\n\x07\x64\x65tails\x18\x01 \x01(\t\"*\n\x08Neighbor\x12\x0e\n\x06pod_ip\x18\x01 \x01(\t\x12\x0e\n\x06weight\x18\x02 \x01(\x01\"3\n\x0cNeighborList\x12#\n\tneighbors\x18\x01 \x03(\x0b\x32\x10.gossip.Neighbor2\x8e\x01\n\rGossipService\x12<\n\x0bSendMessage\x12\x15.gossip.GossipMessage\x1a\x16.gossip.Acknowledgment\x12?\n\x0fUpdateNeighbors\x12\x14.gossip.NeighborList\x1a\x16.gossip.Acknowledgmentb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'gossip_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_GOSSIPMESSAGE']._serialized_start=16
-  _globals['_GOSSIPMESSAGE']._serialized_end=127
-  _globals['_ACKNOWLEDGMENT']._serialized_start=129
-  _globals['_ACKNOWLEDGMENT']._serialized_end=162
-  _globals['_NEIGHBOR']._serialized_start=164
-  _globals['_NEIGHBOR']._serialized_end=206
-  _globals['_NEIGHBORLIST']._serialized_start=208
-  _globals['_NEIGHBORLIST']._serialized_end=252
-  _globals['_GOSSIPSERVICE']._serialized_start=254
-  _globals['_GOSSIPSERVICE']._serialized_end=368
+  _globals['_GOSSIPMESSAGE']._serialized_start=24
+  _globals['_GOSSIPMESSAGE']._serialized_end=135
+  _globals['_ACKNOWLEDGMENT']._serialized_start=137
+  _globals['_ACKNOWLEDGMENT']._serialized_end=170
+  _globals['_NEIGHBOR']._serialized_start=172
+  _globals['_NEIGHBOR']._serialized_end=214
+  _globals['_NEIGHBORLIST']._serialized_start=216
+  _globals['_NEIGHBORLIST']._serialized_end=267
+  _globals['_GOSSIPSERVICE']._serialized_start=270
+  _globals['_GOSSIPSERVICE']._serialized_end=412
 # @@protoc_insertion_point(module_scope)
