@@ -12,50 +12,58 @@ import uuid
 import string
 import secrets
 import csv
+import argparse
 from datetime import datetime, timezone, timedelta
+
+# ==========================================
+# 🔧 PARAMETER PARSING
+# ==========================================
+def str2bool(v):
+    if isinstance(v, bool): return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'): return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'): return False
+    else: raise argparse.ArgumentTypeError('Boolean value expected.')
+
+parser = argparse.ArgumentParser(description="Gossip Experiment Orchestrator")
+parser.add_argument("--k8s_nodes", type=int, default=3, help="GKE worker nodes (default: 3)")
+parser.add_argument("--p2p_nodes", type=int, default=10, help="Target P2P pods (default: 10)")
+parser.add_argument("--autoscale", type=str2bool, default=False, help="Enable GKE autoscaling (default: false)")
+parser.add_argument("--project_id", type=str, default="stoked-cosine-415611", help="GCP Project ID")
+parser.add_argument("--zone", type=str, default="us-central1-c", help="GCP Zone")
+
+args = parser.parse_args()
+K8S_NODES = args.k8s_nodes
+P2P_TARGET = args.p2p_nodes
+AUTOSCALE_ENABLED = args.autoscale
+PROJECT_ID = args.project_id
+ZONE = args.zone
 
 # ==========================================
 # 🔧 USER CONFIGURATION
 # ==========================================
-PROJECT_ID = "stoked-cosine-415611"
-ZONE = "us-central1-c"
 K8SCLUSTER_NAME = "bcgossip-cluster"
-K8SNODE_COUNT = 5  
-
 IMAGE_NAME = "wwiras/simcl2"
 IMAGE_TAG = "v17"
 TOPOLOGY_FOLDER = "topology"
 HELM_CHART_FOLDER = "simcl2" 
 
-# EXPERIMENT_DURATION = 10
 EXPERIMENT_DURATION = 3    
 BASE_TRIGGER_TIMEOUT = 10   
 TIMEOUT_INCREMENT = 2       
 NUM_REPEAT_TESTS = 3        
-
-# ==========================================
-# 🛠️ HELPERS & TIMEZONE
-# ==========================================
 MYT = timezone(timedelta(hours=8))
 
-def get_short_id(length=5):
-    characters = string.digits + string.ascii_letters
-    return ''.join(secrets.choice(characters) for _ in range(length))
-
 # ==========================================
-# 📝 LOGGING & CSV SETUP
+# 📝 LOGGING SETUP
 # ==========================================
 LOG_DIR = "logs"
-if not os.path.exists(LOG_DIR):
-    os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
 
-unique_run_id = get_short_id(5)
+unique_run_id = ''.join(secrets.choice(string.digits + string.ascii_letters) for _ in range(5))
 timestamp_str = datetime.now(MYT).strftime("%Y%m%d_%H%M%S")
 
-# Filenames linked by the same timestamp/ID
 log_filename = f"orchestrator_{timestamp_str}_{unique_run_id}.log"
 csv_filename = f"orchestrator_{timestamp_str}_{unique_run_id}.csv"
-
 full_log_path = os.path.join(LOG_DIR, log_filename)
 full_csv_path = os.path.join(LOG_DIR, csv_filename)
 
@@ -63,16 +71,15 @@ logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(message)s",
     datefmt="%H:%M:%S",
-    handlers=[
-        logging.FileHandler(full_log_path), 
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler(full_log_path), logging.StreamHandler()]
 )
 
 logging.Formatter.converter = lambda *args: datetime.now(MYT).timetuple()
 
 def log(msg):
     logging.info(msg)
+    for handler in logging.getLogger().handlers:
+        handler.flush()
 
 # ==========================================
 # 🛠️ HELPER CLASS
@@ -157,105 +164,86 @@ def main():
     
     # 1. TOPOLOGY SCANNING
     raw_files = glob.glob(os.path.join(TOPOLOGY_FOLDER, "*.json"))
-    topology_list = []
-
-    for filepath in raw_files:
-        filename = os.path.basename(filepath)
-        node_match = re.search(r"nodes(\d+)", filename)
-        node_count = int(node_match.group(1)) if node_match else 0
-        topology_list.append({
-            "path": filepath,
-            "filename": filename,
-            "node_count": node_count
-        })
-
-    topology_list.sort(key=lambda x: x['node_count'])
+    topology_list = [f for f in raw_files if f"nodes{P2P_TARGET}" in f]
+    topology_list.sort()
     
     if not topology_list: 
-        log("❌ No topology files found in the /topology folder.")
-        return
+        sys.exit(f"❌ No topology files found for {P2P_TARGET} nodes in /{TOPOLOGY_FOLDER}")
     
     # 2. INFRASTRUCTURE SETUP
     log("\n" + "="*50)
     log("🏗️  INFRASTRUCTURE CONFIGURATION")
-    log(f"   - Cluster Name: {K8SCLUSTER_NAME}")
-    log(f"   - Nodes: {K8SNODE_COUNT}")
-    log(f"   - Zone: {ZONE}")
-    log(f"   - Project: {PROJECT_ID}")
-    log(f"   - Time (MYT): {datetime.now(MYT).strftime('%d-%m-%Y %H:%M:%S')}")
+    log(f"   - Cluster Name:   {K8SCLUSTER_NAME}")
+    log(f"   - Node Count:     {K8S_NODES} (Autoscale: {AUTOSCALE_ENABLED})")
+    log(f"   - Project ID:     {PROJECT_ID}")
+    log(f"   - Zone:           {ZONE}")
+    log(f"   - Execution Time: {datetime.now(MYT).strftime('%d-%m-%Y %H:%M:%S')}")
     log("="*50 + "\n")
 
-    try:
-        # with autoscaling
-        subprocess.run([
-            "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
-            "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
-            "--machine-type", "e2-medium", "--enable-ip-alias",
-            "--max-pods-per-node", "40", "--enable-autoscaling",
-            "--min-nodes", "1", "--max-nodes", "100", "--quiet"
-        ], check=True, capture_output=True, text=True)
-        
-        # without scaling
-        # subprocess.run([
-        #     "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
-        #     "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
-        #     "--machine-type", "e2-medium","--quiet"
-        # ], check=True, capture_output=True, text=True)
-        
-        log("✅ Cluster created successfully.")
-    except subprocess.CalledProcessError as e:
-        if "already exists" in e.stderr.lower():
-            log("ℹ️ Cluster already exists. Fetching credentials...")
-        else:
-            log(f"❌ CRITICAL ERROR: {e.stderr}")
-            sys.exit(1) 
+    check_cmd = f"gcloud container clusters list --project {PROJECT_ID} --filter='name:{K8SCLUSTER_NAME}' --format='value(name)' --zone {ZONE}"
+    existing = subprocess.run(check_cmd, shell=True, capture_output=True, text=True).stdout.strip()
 
-    subprocess.run([
-        "gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, 
-        "--zone", ZONE, "--project", PROJECT_ID
-    ], check=True)
+    if not existing:
+        log(f"🔨 Cluster not found. Initiating synchronous creation...")
+        create_cmd = [
+            "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
+            "--project", PROJECT_ID, "--zone", ZONE, "--num-nodes", str(K8S_NODES),
+            "--machine-type", "e2-medium", "--enable-ip-alias",
+            "--max-pods-per-node", "40", "--quiet"
+        ]
+        if AUTOSCALE_ENABLED:
+            create_cmd.extend(["--enable-autoscaling", "--min-nodes", "1", "--max-nodes", "100"])
+        
+        try:
+            subprocess.run(create_cmd, check=True)
+            log("✅ Cluster created successfully.")
+        except subprocess.CalledProcessError:
+            sys.exit("❌ Infrastructure failure during creation.")
+    else:
+        log(f"ℹ️  Cluster '{K8SCLUSTER_NAME}' already exists. Reusing infrastructure.")
+
+    subprocess.run(["gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, 
+                    "--zone", ZONE, "--project", PROJECT_ID], check=True, capture_output=True)
 
     # 3. EXPERIMENT LOOP
     try:
-        for i, topo in enumerate(topology_list):
-            filename = topo['filename']
-            p2p_nodes = topo['node_count']
-            unique_id = get_short_id(5)
-            
-            # This is the base ID used for extraction in BigQuery
-            base_test_id = f"{unique_id}-cubaan{p2p_nodes}"
+        for i, filepath in enumerate(topology_list):
+            filename = os.path.basename(filepath)
+            unique_id = ''.join(secrets.choice(string.digits + string.ascii_letters) for _ in range(5))
+            base_test_id = f"{unique_id}-cubaan{P2P_TARGET}"
 
             log(f"\n[{i+1}/{len(topology_list)}] 🚀 TOPOLOGY: {filename}")
             log(f"   👉 Base Test ID: {base_test_id}")
 
-            # --- A. CONDITIONAL HELM DEPLOYMENT ---
+            # --- A. HELM DEPLOYMENT ---
             current_workload = helper.get_current_running_pod_count()
-            if current_workload != p2p_nodes:
-                log(f"🔄 Scaling pods from {current_workload} to {p2p_nodes}...")
-                try:
-                    helper.run_command("helm uninstall simcn", suppress_output=True)
-                    time.sleep(5) 
-                except: pass
+            log(f"🔄 Scaling pods for {P2P_TARGET} workload...")
+            try:
+                helper.run_command("helm uninstall simcn", suppress_output=True)
+                time.sleep(5) 
+            except: pass
 
-                os.chdir(HELM_CHART_FOLDER)
-                try:
-                    helm_cmd = (f"helm install simcn ./chartsim --set testType=default,"
-                                f"totalNodes={p2p_nodes},image.tag={IMAGE_TAG},image.name={IMAGE_NAME}")
-                    helper.run_command(helm_cmd, capture=False)
-                finally:
-                    os.chdir(ROOT_DIR)
+            os.chdir(HELM_CHART_FOLDER)
+            try:
+                helm_cmd = (f"helm install simcn ./chartsim --set testType=default,"
+                            f"totalNodes={P2P_TARGET},image.tag={IMAGE_TAG},image.name={IMAGE_NAME}")
+                helper.run_command(helm_cmd, capture=False)
+            finally:
+                os.chdir(ROOT_DIR)
 
-                if not helper.wait_for_pods_to_be_ready(expected_pods=p2p_nodes):
-                    raise Exception("Pods scale-up failed.")
+            if not helper.wait_for_pods_to_be_ready(expected_pods=P2P_TARGET):
+                raise Exception("Pods scale-up failed.")
             
             # --- B. INJECT TOPOLOGY ---
+            log(f"💉 Injecting Topology: {filename}")
             subprocess.run(f"python3 prepare.py --filename {filename}", shell=True, check=True)
+            # Add small buffer to ensure SQLite tables are ready across all pods
+            time.sleep(5)
 
-            # Record test metadata
             test_summary.append({
                 "test_id": base_test_id,
                 "topology": filename,
-                "pods": p2p_nodes,
+                "pods": P2P_TARGET,
                 "timestamp": datetime.now(MYT).strftime('%Y-%m-%d %H:%M:%S')
             })
 
@@ -275,14 +263,13 @@ def main():
     finally:
         log("\n🧹 Starting Post-Experiment Cleanup...")
         try:
-            subprocess.run(["helm", "uninstall", "simcn"], check=False)
+            subprocess.run(["helm", "uninstall", "simcn"], capture_output=True)
+            log("🚮 Requesting Cluster Deletion (Async background)...")
             subprocess.run(["gcloud", "container", "clusters", "delete", K8SCLUSTER_NAME, 
-                            "--zone", ZONE, "--project", PROJECT_ID, "--quiet"], check=False)
+                            "--zone", ZONE, "--project", PROJECT_ID, "--quiet", "--async"], check=False)
         except: pass
 
-        # ==========================================
-        # 📊 FINAL TEST SUMMARY & CSV EXPORT
-        # ==========================================
+        # Final CSV Export
         log("\n" + "="*80)
         log("📋 FINAL TEST EXECUTION SUMMARY")
         log(f"{'TEST_ID':<30} | {'TOPOLOGY':<40} | {'PODS':<5}")
@@ -293,11 +280,8 @@ def main():
                 writer = csv.DictWriter(f, fieldnames=["test_id", "topology", "pods", "timestamp"])
                 writer.writeheader()
                 for entry in test_summary:
-                    # Print to logs
                     log(f"{entry['test_id']:<30} | {entry['topology']:<40} | {entry['pods']:<5}")
-                    # Write to CSV
                     writer.writerow(entry)
-            
             log("-" * 80)
             log(f"✅ CSV Exported to: {full_csv_path}")
         except Exception as e:
