@@ -25,7 +25,8 @@ K8SNODE_COUNT = 3
 IMAGE_NAME = "wwiras/simcl2"
 IMAGE_TAG = "v17"
 TOPOLOGY_FOLDER = "topology"
-HELM_CHART_FOLDER = "simcl2" 
+HELM_CHART_FOLDER = "simcl2"
+MTYPE = "e2-medium" 
 
 # EXPERIMENT_DURATION = 10
 EXPERIMENT_DURATION = 3    
@@ -179,6 +180,7 @@ def main():
     log("\n" + "="*50)
     log("🏗️  INFRASTRUCTURE CONFIGURATION")
     log(f"   - Cluster Name: {K8SCLUSTER_NAME}")
+    log(f"   - Machine Type: {MTYPE}")
     log(f"   - Nodes: {K8SNODE_COUNT}")
     log(f"   - Zone: {ZONE}")
     log(f"   - Project: {PROJECT_ID}")
@@ -199,7 +201,7 @@ def main():
         subprocess.run([
             "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
             "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
-            "--machine-type", "e2-medium","--quiet"
+            "--machine-type", MTYPE,"--quiet"
         ], check=True, capture_output=True, text=True)
         
         # without scaling and e2-small
