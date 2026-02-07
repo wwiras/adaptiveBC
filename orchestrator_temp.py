@@ -20,7 +20,7 @@ from datetime import datetime, timezone, timedelta
 PROJECT_ID = "stoked-cosine-415611"
 ZONE = "us-central1-c"
 K8SCLUSTER_NAME = "bcgossip-cluster"
-K8SNODE_COUNT = 5  
+K8SNODE_COUNT = 3  
 
 IMAGE_NAME = "wwiras/simcl2"
 IMAGE_TAG = "v17"
@@ -187,19 +187,26 @@ def main():
 
     try:
         # with autoscaling
-        subprocess.run([
-            "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
-            "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
-            "--machine-type", "e2-medium", "--enable-ip-alias",
-            "--max-pods-per-node", "40", "--enable-autoscaling",
-            "--min-nodes", "1", "--max-nodes", "100", "--quiet"
-        ], check=True, capture_output=True, text=True)
-        
-        # without scaling
         # subprocess.run([
         #     "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
         #     "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
-        #     "--machine-type", "e2-medium","--quiet"
+        #     "--machine-type", "e2-medium", "--enable-ip-alias",
+        #     "--max-pods-per-node", "40", "--enable-autoscaling",
+        #     "--min-nodes", "1", "--max-nodes", "100", "--quiet"
+        # ], check=True, capture_output=True, text=True)
+        
+        # without scaling
+        subprocess.run([
+            "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
+            "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
+            "--machine-type", "e2-medium","--quiet"
+        ], check=True, capture_output=True, text=True)
+        
+        # without scaling and e2-small
+        # subprocess.run([
+        #     "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
+        #     "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
+        #     "--machine-type", "e2-small","--quiet"
         # ], check=True, capture_output=True, text=True)
         
         log("✅ Cluster created successfully.")
