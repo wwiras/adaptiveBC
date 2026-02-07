@@ -4,10 +4,8 @@ import time
 import subprocess
 import re
 import random
-import select
 import logging
 import sys
-import json
 import string
 import secrets
 import csv
@@ -44,8 +42,8 @@ IMAGE_TAG = "v18"
 TOPOLOGY_FOLDER = "topology"
 HELM_CHART_FOLDER = "simcl2" 
 
-EXPERIMENT_DURATION = 3    
-BASE_TRIGGER_TIMEOUT = 10   
+EXPERIMENT_DURATION = 10    
+BASE_TRIGGER_TIMEOUT = 12   
 NUM_REPEAT_TESTS = 3        
 MYT = timezone(timedelta(hours=8))
 
@@ -66,98 +64,91 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", date
                     handlers=[logging.FileHandler(full_log_path), logging.StreamHandler()])
 logging.Formatter.converter = lambda *args: datetime.now(MYT).timetuple()
 
-def log(msg): logging.info(msg)
+def log(msg): 
+    logging.info(msg)
+    for handler in logging.getLogger().handlers:
+        handler.flush()
 
 # ==========================================
-# 🛠️ CLUSTER ASYNC LOGIC
+# 🛠️ GOSSIP HELPERS
 # ==========================================
-def create_cluster_async(cluster_name, zone, node_count, autoscale, timeout_seconds=900):
-    log(f"🚀 Initiating cluster creation (Async Mode)...")
-    
-    gke_cmd = [
-        "gcloud", "container", "clusters", "create", cluster_name,
-        "--zone", zone, "--num-nodes", str(node_count),
-        "--machine-type", "e2-medium", "--enable-ip-alias", "--quiet", "--async"
-    ]
-    if autoscale:
-        gke_cmd.extend(["--enable-autoscaling", "--min-nodes", "1", "--max-nodes", "100"])
+def select_random_pod():
+    cmd = "kubectl get pods -l app=bcgossip --no-headers | grep Running | awk '{print $1}'"
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    pod_list = result.stdout.strip().split()
+    return random.choice(pod_list) if pod_list else None
 
+def trigger_gossip_hybrid(pod_name, test_id):
+    log(f"      ⚡ Triggering {pod_name} (Msg: {test_id})")
+    cmd = ['kubectl', 'exec', pod_name, '--', 'python3', 'start.py', '--message', test_id]
     try:
-        # We capture stderr to check if the cluster already exists
-        proc = subprocess.run(gke_cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            if "already exists" in proc.stderr.lower():
-                log("ℹ️ Cluster already exists. Skipping creation.")
-                return True
-            else:
-                log(f"❌ Initial request failed: {proc.stderr}")
-                return False
-    except Exception as e:
-        log(f"❌ Subprocess error: {e}")
-        return False
-
-    log("📡 Request accepted by GCP. Polling for 'RUNNING' status...")
-    start_time = time.time()
-    
-    while (time.time() - start_time) < timeout_seconds:
-        status_check = subprocess.run([
-            "gcloud", "container", "clusters", "describe", cluster_name,
-            "--zone", zone, "--format=value(status)"
-        ], capture_output=True, text=True)
-        
-        status = status_check.stdout.strip()
-        elapsed = int(time.time() - start_time)
-        
-        if status == "RUNNING":
-            log(f"✅ Cluster is READY after {elapsed}s.")
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=BASE_TRIGGER_TIMEOUT)
+        if "Received acknowledgment" in proc.stdout:
+            log(f"      ✅ ACK RECEIVED")
             return True
-        elif status in ["PROVISIONING", "RECONCILING"]:
-            log(f"⏳ Status: {status} ({elapsed}s elapsed)...")
-        else:
-            log(f"❓ Current Status: {status}")
-            
-        time.sleep(30)
-    
-    log(f"❌ TIMEOUT: Cluster did not reach RUNNING in {timeout_seconds}s.")
+        log(f"      ⚠️ No ACK. Pod said: {proc.stdout.strip()[:50]}")
+    except subprocess.TimeoutExpired:
+        log("      ⏱️ Trigger Timeout")
+    return False
+
+def wait_for_pods_ready(expected, timeout=300):
+    log(f"⏳ Waiting for {expected} pods to reach 'Running' state...")
+    start = time.time()
+    while time.time() - start < timeout:
+        cmd = "kubectl get pods -l app=bcgossip --no-headers | grep Running | wc -l"
+        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        count = int(res.stdout.strip() or 0)
+        if count >= expected:
+            log(f"✅ All {expected} pods are READY.")
+            return True
+        time.sleep(10)
     return False
 
 # ==========================================
 # 🚀 MAIN ORCHESTRATOR
 # ==========================================
 def main():
-    # --- PRE-FLIGHT CHECKS ---
-    if P2P_TARGET > (K8S_NODES * 35) and not AUTOSCALE_ENABLED:
-        log(f"⚠️ DANGER: {P2P_TARGET} pods is likely too many for {K8S_NODES} nodes.")
-        log("Consider increasing --k8s_nodes or enabling --autoscale true.")
-        sys.exit(1)
-
-    # 1. TOPOLOGY SCANNING
     raw_files = glob.glob(os.path.join(TOPOLOGY_FOLDER, "*.json"))
     topology_list = [f for f in raw_files if f"nodes{P2P_TARGET}" in f]
 
     if not topology_list:
-        log(f"❌ No topology files found for {P2P_TARGET} nodes in /{TOPOLOGY_FOLDER}")
-        return
+        sys.exit(f"❌ No topology files found for {P2P_TARGET} nodes in /{TOPOLOGY_FOLDER}")
 
     # 2. INFRASTRUCTURE SETUP
     log("\n" + "="*50)
     log("🏗️  INFRASTRUCTURE CONFIGURATION")
-    log(f"   - K8s Nodes: {K8S_NODES}")
-    log(f"   - Cluster Name: {K8SCLUSTER_NAME}")
-    log(f"   - P2P Target: {P2P_TARGET}")
-    log(f"   - Autoscale:  {AUTOSCALE_ENABLED}")
-    log(f"   - Project: {PROJECT_ID}")
-    log(f"   - Zone: {ZONE}")
+    log(f"   - Cluster Name:   {K8SCLUSTER_NAME}")
+    log(f"   - Node Count:     {K8S_NODES} (Autoscale: {AUTOSCALE_ENABLED})")
+    log(f"   - Target P2P:     {P2P_TARGET} pods")
+    log(f"   - Project ID:     {PROJECT_ID}")
+    log(f"   - Zone:           {ZONE}")
+    log(f"   - Execution Time: {datetime.now(MYT).strftime('%d-%m-%Y %H:%M:%S')}")
     log("="*50 + "\n")
 
-    if not create_cluster_async(K8SCLUSTER_NAME, ZONE, K8S_NODES, AUTOSCALE_ENABLED):
-        sys.exit("Infrastructure failure. Exiting.")
+    check_cmd = f"gcloud container clusters list --filter='name:{K8SCLUSTER_NAME}' --format='value(name)' --zone {ZONE}"
+    existing = subprocess.run(check_cmd, shell=True, capture_output=True, text=True).stdout.strip()
 
-    # Get credentials quietly
+    if not existing:
+        log(f"🔨 Cluster not found. Initiating creation (this takes 5-8 mins)...")
+        create_cmd = [
+            "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
+            "--zone", ZONE, "--num-nodes", str(K8S_NODES),
+            "--machine-type", "e2-medium", "--enable-ip-alias", "--quiet"
+        ]
+        if AUTOSCALE_ENABLED:
+            create_cmd.extend(["--enable-autoscaling", "--min-nodes", "1", "--max-nodes", "100"])
+        
+        try:
+            subprocess.run(create_cmd, check=True)
+            log("✅ Cluster created successfully.")
+        except subprocess.CalledProcessError:
+            sys.exit("❌ Infrastructure failure during creation.")
+    else:
+        log(f"ℹ️  Cluster '{K8SCLUSTER_NAME}' already exists. Reusing infrastructure.")
+
     subprocess.run(["gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, 
                     "--zone", ZONE, "--project", PROJECT_ID], check=True, capture_output=True)
 
-    # 3. EXPERIMENT LOOP
     test_summary = []
     try:
         for filepath in topology_list:
@@ -167,7 +158,6 @@ def main():
 
             log(f"\n🚀 STARTING TOPOLOGY: {filename} (ID: {base_test_id})")
             
-            # Helm Deployment
             log(f"🔄 Helm: Reinstalling simcn for {P2P_TARGET} pods...")
             subprocess.run(["helm", "uninstall", "simcn"], capture_output=True)
             time.sleep(5)
@@ -177,22 +167,33 @@ def main():
                            shell=True, check=True, capture_output=True)
             os.chdir("..")
 
-            # Pod Ready Check (simplified polling)
-            log(f"⏳ Waiting for Pods to initialize...")
-            time.sleep(40) 
+            if not wait_for_pods_ready(P2P_TARGET):
+                log(f"❌ Pods failed to initialize for {filename}. Skipping.")
+                continue
 
-            # Inject Topology
+            log(f"💉 Injecting Topology: {filename}")
             subprocess.run(f"python3 prepare.py --filename {filename}", shell=True, check=True)
 
-            test_summary.append({"test_id": base_test_id, "topology": filename, "pods": P2P_TARGET, 
-                                 "timestamp": datetime.now(MYT).strftime('%Y-%m-%d %H:%M:%S')})
-
-            # Repeat Tests (Repeat logic based on previous trigger scripts)
             for run_idx in range(1, NUM_REPEAT_TESTS + 1):
                 msg = f"{base_test_id}-{run_idx}"
-                log(f"   🔄 Run {run_idx}: {msg}")
-                # [Triggering logic would go here]
-                time.sleep(EXPERIMENT_DURATION + 2)
+                log(f"   🔄 Run {run_idx}/{NUM_REPEAT_TESTS}: {msg}")
+                
+                target_pod = select_random_pod()
+                if target_pod:
+                    if trigger_gossip_hybrid(target_pod, msg):
+                        log(f"      ⏳ Propagating for {EXPERIMENT_DURATION}s...")
+                        time.sleep(EXPERIMENT_DURATION)
+                        
+                        test_summary.append({
+                            "test_id": msg, 
+                            "topology": filename, 
+                            "pods": P2P_TARGET, 
+                            "timestamp": datetime.now(MYT).strftime('%Y-%m-%d %H:%M:%S')
+                        })
+                else:
+                    log("      ❌ Error: No running pods found to trigger.")
+                
+                time.sleep(2)
 
     except Exception as e:
         log(f"❌ ERROR DURING LOOP: {e}")
@@ -200,17 +201,16 @@ def main():
         log("\n🧹 CLEANUP: Deleting Helm release and Cluster...")
         try:
             subprocess.run(["helm", "uninstall", "simcn"], capture_output=True)
-            # Delete cluster asynchronously to save local time, or remove --async to wait
             subprocess.run(["gcloud", "container", "clusters", "delete", K8SCLUSTER_NAME, 
                             "--zone", ZONE, "--project", PROJECT_ID, "--quiet", "--async"], check=False)
-            log("🚮 Cluster deletion requested (Async).")
+            log("🚮 Cluster deletion requested (GCP is handling it in background).")
         except: pass
 
-        # Final CSV Summary
         with open(full_csv_path, mode='w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=["test_id", "topology", "pods", "timestamp"])
             writer.writeheader()
             writer.writerows(test_summary)
+        
         log(f"📊 Summary exported to: {full_csv_path}")
         log("🏁 Done.")
 
