@@ -107,18 +107,36 @@ except Exception: sys.exit(1)
                                  gossip_pb2_grpc.GossipServiceStub(chan).UpdateNeighbors(Empty(), timeout=10) \
                          except Exception: sys.exit(1)"
         
+        # for attempt in range(1, retries + 1):
+            # try:
+            #     self.run_command(['kubectl', 'exec', pod_name, '--', 'python3', '-c', db_script], shell=False)
+            #     self.run_command(['kubectl', 'exec', pod_name, '--', 'python3', '-c', notify_script], shell=False)
+            #     return True, pod_name
+            # except Exception as e:
+            #     if attempt < retries:
+            #         # Random jitter for retries to avoid API congestion
+            #         wait = random.uniform(1.0, 3.0)
+            #         time.sleep(wait)
+            #     else:
+            #         return False, pod_name
+            
         for attempt in range(1, retries + 1):
             try:
+                # Add capture_output=True and check=True here
                 self.run_command(['kubectl', 'exec', pod_name, '--', 'python3', '-c', db_script], shell=False)
                 self.run_command(['kubectl', 'exec', pod_name, '--', 'python3', '-c', notify_script], shell=False)
                 return True, pod_name
-            except Exception as e:
-                if attempt < retries:
-                    # Random jitter for retries to avoid API congestion
-                    wait = random.uniform(1.0, 3.0)
-                    time.sleep(wait)
-                else:
+            except subprocess.CalledProcessError as e:
+                if attempt == retries:
+                    # LOG THE ACTUAL ERROR ON THE FINAL ATTEMPT
+                    log(f"      ❌ Final Attempt Failed for {pod_name}. Stderr: {e.stderr}")
                     return False, pod_name
+                time.sleep(random.uniform(1.0, 2.0))
+            except Exception as e:
+                log(f"      ❌ Unexpected Error: {str(e)}")
+                return False, pod_name
+
+        
 
     def push_topology_parallel(self, topology_path, pod_details):
         log(f"💉 Injecting topology into {len(pod_details)} pods (Parallel + Retry)...")
