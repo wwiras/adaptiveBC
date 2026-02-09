@@ -12,15 +12,27 @@ import uuid
 import string
 import secrets
 import csv
+import argparse # Added for variables
 from datetime import datetime, timezone, timedelta
 
 # ==========================================
-# 🔧 USER CONFIGURATION
+# 🔧 ARGUMENT PARSING (Dynamic Variables)
 # ==========================================
-PROJECT_ID = "stoked-cosine-415611"
-ZONE = "us-central1-c"
-K8SCLUSTER_NAME = "bcgossip-cluster"
-K8SNODE_COUNT = 3  
+parser = argparse.ArgumentParser()
+parser.add_argument("--k8snodes", type=int, default=3)
+parser.add_argument("--p2pnodes", type=int, default=10)
+parser.add_argument("--zone", type=str, default="us-central1-c")
+parser.add_argument("--project_id", type=str, default="stoked-cosine-415611")
+parser.add_argument("--cluster_name", type=str, default="bcgossip-cluster")
+args = parser.parse_args()
+
+# ==========================================
+# 🔧 USER CONFIGURATION (Replaced with args)
+# ==========================================
+PROJECT_ID = args.project_id
+ZONE = args.zone
+K8SCLUSTER_NAME = args.cluster_name
+K8SNODE_COUNT = args.k8snodes
 
 IMAGE_NAME = "wwiras/simcl2"
 IMAGE_TAG = "v17"
@@ -163,7 +175,8 @@ def main():
     for filepath in raw_files:
         filename = os.path.basename(filepath)
         node_match = re.search(r"nodes(\d+)", filename)
-        node_count = int(node_match.group(1)) if node_match else 0
+        # Use args.p2pnodes as the fallback if regex finds nothing
+        node_count = int(node_match.group(1)) if node_match else args.p2pnodes
         topology_list.append({
             "path": filepath,
             "filename": filename,
@@ -188,28 +201,12 @@ def main():
     log("="*50 + "\n")
 
     try:
-        # with autoscaling
-        # subprocess.run([
-        #     "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
-        #     "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
-        #     "--machine-type", "e2-medium", "--enable-ip-alias",
-        #     "--max-pods-per-node", "40", "--enable-autoscaling",
-        #     "--min-nodes", "1", "--max-nodes", "100", "--quiet"
-        # ], check=True, capture_output=True, text=True)
-        
         # without scaling
         subprocess.run([
             "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
             "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
             "--machine-type", MTYPE,"--quiet"
         ], check=True, capture_output=True, text=True)
-        
-        # without scaling and e2-small
-        # subprocess.run([
-        #     "gcloud", "container", "clusters", "create", K8SCLUSTER_NAME,
-        #     "--zone", ZONE, "--num-nodes", str(K8SNODE_COUNT), 
-        #     "--machine-type", "e2-small","--quiet"
-        # ], check=True, capture_output=True, text=True)
         
         log("✅ Cluster created successfully.")
     except subprocess.CalledProcessError as e:

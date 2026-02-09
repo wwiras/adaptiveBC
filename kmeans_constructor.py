@@ -434,7 +434,13 @@ if __name__ == '__main__':
     # For d=20
     # filename = "nodes1000_Jan112026230844_BA20.json"
     # For d=30
-    filename = "nodes1000_Jan112026230858_BA30.json"
+    # filename = "nodes1000_Jan112026230858_BA30.json"
+    
+    # For RO2
+    # filename = "nodes500_Feb102026001027_BA8.json"
+    # filename = "nodes1000_Feb102026001403_BA8.json"
+    filename = "nodes1000_Feb102026001403_BA8.json"
+    
     
   
     
