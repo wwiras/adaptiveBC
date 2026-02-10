@@ -87,16 +87,16 @@ class ExperimentHelper:
         return pods 
 
     def inject_to_single_pod(self, pod_name, neighbor_data, retries=3):
-        """Phase 1: SQLite Transaction; Phase 2: gRPC Notify. Includes Retry Loop."""
         neighbors_json = json.dumps(neighbor_data)
         db_script = f"""
 import sqlite3, json, sys
 try:
     data = json.loads('{neighbors_json}')
     with sqlite3.connect('ned.db') as conn:
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('CREATE TABLE IF NOT EXISTS NEIGHBORS (pod_ip TEXT PRIMARY KEY, weight REAL)')
         conn.execute('BEGIN TRANSACTION')
-        conn.execute('DROP TABLE IF EXISTS NEIGHBORS')
-        conn.execute('CREATE TABLE NEIGHBORS (pod_ip TEXT PRIMARY KEY, weight REAL)')
+        conn.execute('DELETE FROM NEIGHBORS')
         conn.executemany('INSERT INTO NEIGHBORS VALUES (?, ?)', data)
         conn.commit()
 except Exception: sys.exit(1)
@@ -107,39 +107,19 @@ except Exception: sys.exit(1)
                                  gossip_pb2_grpc.GossipServiceStub(chan).UpdateNeighbors(Empty(), timeout=10) \
                          except Exception: sys.exit(1)"
         
-        # for attempt in range(1, retries + 1):
-            # try:
-            #     self.run_command(['kubectl', 'exec', pod_name, '--', 'python3', '-c', db_script], shell=False)
-            #     self.run_command(['kubectl', 'exec', pod_name, '--', 'python3', '-c', notify_script], shell=False)
-            #     return True, pod_name
-            # except Exception as e:
-            #     if attempt < retries:
-            #         # Random jitter for retries to avoid API congestion
-            #         wait = random.uniform(1.0, 3.0)
-            #         time.sleep(wait)
-            #     else:
-            #         return False, pod_name
-            
         for attempt in range(1, retries + 1):
             try:
-                # Add capture_output=True and check=True here
                 self.run_command(['kubectl', 'exec', pod_name, '--', 'python3', '-c', db_script], shell=False)
                 self.run_command(['kubectl', 'exec', pod_name, '--', 'python3', '-c', notify_script], shell=False)
                 return True, pod_name
-            except subprocess.CalledProcessError as e:
-                if attempt == retries:
-                    # LOG THE ACTUAL ERROR ON THE FINAL ATTEMPT
-                    log(f"      ❌ Final Attempt Failed for {pod_name}. Stderr: {e.stderr}")
+            except Exception:
+                if attempt < retries:
+                    time.sleep(random.uniform(1.0, 3.0))
+                else:
                     return False, pod_name
-                time.sleep(random.uniform(1.0, 2.0))
-            except Exception as e:
-                log(f"      ❌ Unexpected Error: {str(e)}")
-                return False, pod_name
-
-        
 
     def push_topology_parallel(self, topology_path, pod_details):
-        log(f"💉 Injecting topology into {len(pod_details)} pods (Parallel + Retry)...")
+        log(f"💉 Parallel Injection into {len(pod_details)} pods...")
         start_time = time.time()
         
         with open(topology_path) as f:
@@ -161,11 +141,28 @@ except Exception: sys.exit(1)
                 if not success: failed_pods.append(pod_name)
         
         if failed_pods:
-            log(f"❌ INJECTION FAILED after retries for: {failed_pods}")
+            log(f"❌ INJECTION FAILED for: {failed_pods}")
             return False
         
         log(f"✅ Injection Successful in {time.time()-start_time:.2f}s")
         return True
+
+    def wait_for_pods_ready(self, expected, timeout=400):
+        log(f"⏳ Waiting for exactly {expected} pods to be Running/Ready...")
+        start = time.time()
+        while time.time() - start < timeout:
+            cmd = "kubectl get pods -l app=bcgossip --no-headers | grep Running | wc -l"
+            res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            count = int(res.stdout.strip() or 0)
+            
+            if count == expected:
+                log(f"✅ Barrier Passed: {count}/{expected} pods active.")
+                time.sleep(10) # Cooldown to ensure gRPC ports are bound
+                return True
+            else:
+                log(f"   ... Progress: {count}/{expected}. Waiting...")
+            time.sleep(10)
+        return False
 
     def trigger_gossip_hybrid(self, pod_name, test_id, cycle):
         timeout = BASE_TRIGGER_TIMEOUT + ((cycle - 1) * TIMEOUT_INCREMENT)
@@ -192,12 +189,11 @@ def main():
     test_summary = []
 
     log("\n" + "="*50)
-    log("🏗️  INFRASTRUCTURE CONFIGURATION")
-    log(f"   - Project: {PROJECT_ID} | Zone: {ZONE}")
-    log(f"   - Cluster: {K8SCLUSTER_NAME} | Target: {P2P_TARGET} pods")
+    log(f"🏗️  GKE: {K8SCLUSTER_NAME} | Target: {P2P_TARGET} pods")
+    log(f"   Time: {datetime.now(MYT).strftime('%d-%m-%Y %H:%M:%S')}")
     log("="*50 + "\n")
 
-    # Cluster Sync Setup
+    # Sync GKE Creation
     check_cmd = f"gcloud container clusters list --project {PROJECT_ID} --filter='name:{K8SCLUSTER_NAME}' --format='value(name)' --zone {ZONE}"
     existing = subprocess.run(check_cmd, shell=True, capture_output=True, text=True).stdout.strip()
 
@@ -228,15 +224,18 @@ def main():
             subprocess.run(f"helm install simcn ./chartsim --set totalNodes={P2P_TARGET},image.tag={IMAGE_TAG}", shell=True, check=True, capture_output=True)
             os.chdir(ROOT_DIR)
 
-            log("⏳ Waiting for pods to reach 'Running'...")
-            while int(helper.run_command("kubectl get pods -l app=bcgossip --no-headers | grep Running | wc -l")) < P2P_TARGET:
-                time.sleep(5)
+            # --- EXACT COUNT BARRIER ---
+            if not helper.wait_for_pods_ready(P2P_TARGET):
+                log(f"🛑 ABORTING: Failed to reach pod count for {filename}.")
+                break 
             
+            # --- PARALLEL INJECTION ---
             pods = helper.get_pod_details()
             if not helper.push_topology_parallel(filepath, pods):
-                log(f"🛑 ABORTING: Injection failed for {filename}.")
+                log(f"🛑 ABORTING: Topology injection failed.")
                 break 
 
+            # --- REPEAT RUNS ---
             for run_idx in range(1, NUM_REPEAT_TESTS + 1):
                 msg = f"{base_id}-{run_idx}"
                 log(f"   🔄 Run {run_idx}/{NUM_REPEAT_TESTS}: {msg}")
@@ -248,28 +247,20 @@ def main():
     except Exception as e:
         log(f"❌ CRITICAL ERROR: {e}")
     finally:
-        # --- SYNCHRONOUS CLEANUP ---
-        log("\n🧹 STARTING CLEANUP: Waiting for resource termination...")
+        log("\n🧹 CLEANUP: Synchronous teardown...")
         try:
             subprocess.run(["helm", "uninstall", "simcn"], capture_output=True)
             
-            # Synchronous wait for pods to disappear
             log("⏳ Waiting for all pods to terminate...")
             while True:
-                cmd = "kubectl get pods -l app=bcgossip --no-headers"
-                result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-                if not result.stdout.strip():
-                    log("✅ All pods terminated.")
-                    break
+                res = subprocess.run("kubectl get pods -l app=bcgossip --no-headers", shell=True, capture_output=True, text=True)
+                if not res.stdout.strip(): break
                 time.sleep(5)
 
-            log("🚮 Deleting GKE Cluster...")
-            # We remove --async here to ensure the script stays alive until the cluster is gone
+            log("🚮 Deleting Cluster...")
             subprocess.run(["gcloud", "container", "clusters", "delete", K8SCLUSTER_NAME, 
                             "--zone", ZONE, "--project", PROJECT_ID, "--quiet"], check=False)
-            log("✅ Cluster deleted.")
-        except Exception as e:
-            log(f"⚠️ Cleanup warning: {e}")
+        except Exception: pass
 
         if test_summary:
             with open(full_csv_path, mode='w', newline='') as f:
