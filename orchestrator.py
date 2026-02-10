@@ -98,28 +98,58 @@ except Exception as e:
         except:
             return False
 
+    
     def push_topology(self, topology_path, pod_details):
         with open(topology_path) as f:
             topo = json.load(f)
         
+        # 1. Create a map of ALL possible pods found in K8s
+        # ip_map maps 'gossip-0' -> '10.80.x.x'
         ip_map = {f'gossip-{i}': ip for i, (name, ip) in enumerate(pod_details)}
-        neighbor_map = {node['id']: [] for node in topo['nodes']}
+        
+        # 2. Build neighbor map
+        # We use 'gossip-i' as the universal key format to match ip_map
+        neighbor_map = {f'gossip-{i}': [] for i in range(len(pod_details))}
         
         for edge in topo['edges']:
-            s, t, w = edge['source'], edge['target'], edge['weight']
-            neighbor_map[s].append((ip_map[t], w))
-            if not topo['directed']:
-                neighbor_map[t].append((ip_map[s], w))
+            s = str(edge['source'])
+            t = str(edge['target'])
+            w = edge.get('weight', 0)
+
+            # Ensure keys are in 'gossip-X' format to match neighbor_map keys
+            src_key = s if s.startswith('gossip-') else f'gossip-{s}'
+            tgt_key = t if t.startswith('gossip-') else f'gossip-{t}'
+
+            # Add neighbors only if both pods exist in the current deployment
+            if src_key in neighbor_map and tgt_key in ip_map:
+                neighbor_map[src_key].append((ip_map[tgt_key], w))
+            
+            # Handle undirected graphs
+            if not topo.get('directed', False):
+                if tgt_key in neighbor_map and src_key in ip_map:
+                    neighbor_map[tgt_key].append((ip_map[src_key], w))
 
         log(f"💉 Injecting topology into {len(pod_details)} pods (Parallel)...")
+        
+        # 3. Parallel Injection
         success_count = 0
-        with ThreadPoolExecutor(max_workers=20) as executor:
-            futures = {executor.submit(self.inject_single_node, name, neighbor_map[f'gossip-{i}']): name 
-                       for i, (name, ip) in enumerate(pod_details)}
+        # Increased max_workers for larger clusters (>100 nodes)
+        workers = min(len(pod_details), 50) 
+        
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            # We iterate through pod_details to get the physical name and logical index
+            futures = {}
+            for i, (pod_name, pod_ip) in enumerate(pod_details):
+                logical_id = f'gossip-{i}'
+                data = neighbor_map.get(logical_id, []) # Get neighbors or empty list
+                futures[executor.submit(self.inject_single_node, pod_name, data)] = pod_name
             
             for future in as_completed(futures):
                 if future.result():
                     success_count += 1
+                else:
+                    failed_name = futures[future]
+                    log(f"⚠️ Pod {failed_name} failed topology injection.")
         
         return success_count == len(pod_details)
 
