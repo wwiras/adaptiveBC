@@ -176,40 +176,131 @@ def main():
 
     subprocess.run(["gcloud", "container", "clusters", "get-credentials", K8SCLUSTER_NAME, "--zone", ZONE, "--project", PROJECT_ID], check=True, capture_output=True)
 
-    # 2. Experiment Loop
-    topology_files = sorted(glob.glob(os.path.join(TOPOLOGY_FOLDER, f"*nodes{P2P_TARGET}*.json")))
-    
+    # ==========================================
+    # 🚀 2. EXPERIMENT LOOP
+    # ==========================================
+    topology_files = sorted(glob.glob(os.path.join(TOPOLOGY_FOLDER, "*.json")))
+    last_p2p_count = 0  # Tracks the scale of the currently running workload
+
     try:
         for filepath in topology_files:
             filename = os.path.basename(filepath)
-            run_uid = ''.join(secrets.choice(string.digits + string.ascii_letters) for _ in range(5))
-            base_id = f"{run_uid}-cubaan{P2P_TARGET}"
-            log(f"\n🚀 STARTING TOPOLOGY: {filename}")
-
-            subprocess.run(["helm", "uninstall", "simcn"], capture_output=True)
-            time.sleep(5)
-            os.chdir(HELM_CHART_FOLDER)
-            subprocess.run(f"helm install simcn ./chartsim --set totalNodes={P2P_TARGET},image.tag={IMAGE_TAG}", shell=True, check=True, capture_output=True)
-            os.chdir(ROOT_DIR)
-
-            log(f"⏳ Waiting for {P2P_TARGET} pods to be 'Running'...")
-            while True:
-                res = subprocess.run("kubectl get pods -l app=bcgossip --no-headers | grep Running | wc -l", shell=True, capture_output=True, text=True)
-                if int(res.stdout.strip() or 0) == P2P_TARGET: break
-                time.sleep(5)
             
-            pod_details = helper.get_pod_details()
-            if not helper.push_topology(filepath, pod_details):
-                log("🛑 ABORT: Topology injection failed. Integrity compromised.")
-                break
+            # A. PRE-CHECK: Get authoritative node count from JSON
+            with open(filepath, 'r') as f:
+                topo_data = json.load(f)
+            expected_nodes = len(topo_data.get('nodes', []))
+            
+            if expected_nodes == 0:
+                log(f"⚠️ Skipping {filename}: JSON contains 0 nodes.")
+                continue
 
-            for run_idx in range(1, 4):
+            run_uid = ''.join(secrets.choice(string.digits + string.ascii_letters) for _ in range(5))
+            base_id = f"{run_uid}-nodes{expected_nodes}"
+            log(f"\n" + "-"*30)
+            log(f"📁 PROCESSING: {filename}")
+            log(f"📊 Target Scale: {expected_nodes} pods")
+            log("-"*30)
+
+            # B. CONDITIONAL WORKLOAD MANAGEMENT
+            if expected_nodes != last_p2p_count:
+                log(f"🔄 Scale Mismatch ({last_p2p_count} vs {expected_nodes}). Performing fresh install...")
+                
+                # 1. Uninstall Helm
+                log("🚮 Uninstalling existing Helm release...")
+                subprocess.run(["helm", "uninstall", "simcn"], capture_output=True)
+                
+                # 2. TERMINATION BARRIER: Strict check for zero pods
+                log("⏳ Waiting for all old pods to fully terminate (Synchronous)...")
+                cleanup_start = time.time()
+                while True:
+                    # Poll kubectl for any pods with the app label
+                    check_pods = subprocess.run(
+                        "kubectl get pods -l app=bcgossip --no-headers", 
+                        shell=True, capture_output=True, text=True
+                    )
+                    
+                    if not check_pods.stdout.strip():
+                        log("✅ Cluster is 100% clean.")
+                        break
+                    
+                    # Safety timeout: 10 minutes
+                    if time.time() - cleanup_start > 600:
+                        log("⚠️ Cleanup timeout! Forcing pod deletion...")
+                        subprocess.run("kubectl delete pods -l app=bcgossip --force --grace-period=0", shell=True)
+                        break
+                        
+                    time.sleep(3) # Polling interval
+
+                # 3. Fresh Helm Install
+                os.chdir(HELM_CHART_FOLDER)
+                log(f"📦 Installing Helm chart with totalNodes={expected_nodes}...")
+                subprocess.run(f"helm install simcn ./chartsim --set totalNodes={expected_nodes},image.tag={IMAGE_TAG}", 
+                               shell=True, check=True, capture_output=True)
+                os.chdir(ROOT_DIR)
+
+                # 4. READY BARRIER: Wait for new pods to reach 'Running'
+                log(f"⏳ Waiting for exactly {expected_nodes} pods to be 'Running'...")
+                ready_barrier = False
+                timeout_limit = 60 + (expected_nodes * 2) 
+                wait_start = time.time()
+                
+                while time.time() - wait_start < timeout_limit:
+                    res = subprocess.run("kubectl get pods -l app=bcgossip --no-headers | grep Running | wc -l", 
+                                         shell=True, capture_output=True, text=True)
+                    current_count = int(res.stdout.strip() or 0)
+                    
+                    if current_count == expected_nodes:
+                        log(f"✅ Pod count MATCHES: {current_count}/{expected_nodes}")
+                        time.sleep(10) # Cooldown for gRPC/Service stability
+                        ready_barrier = True
+                        break
+                    time.sleep(5)
+                
+                if not ready_barrier:
+                    log(f"🛑 ABORT: {filename} failed to reach target scale.")
+                    last_p2p_count = 0 # Force reinstall for next file
+                    continue
+                
+                last_p2p_count = expected_nodes
+            else:
+                log(f"⚡ Warm Start: Scale is already {expected_nodes}. Skipping Helm reinstall.")
+
+            # C. TOPOLOGY INJECTION
+            # We always refresh the topology, even if we didn't reinstall Helm
+            pod_details = helper.get_pod_details()
+            
+            # Final safety check before injection
+            if len(pod_details) != expected_nodes:
+                log(f"⚠️ Integrity Error: Found {len(pod_details)} pods, expected {expected_nodes}. Forcing reset.")
+                last_p2p_count = 0 
+                continue
+
+            if not helper.push_topology(filepath, pod_details):
+                log(f"🛑 ABORT: Topology injection failed for {filename}.")
+                continue
+
+            # D. TEST RUNS (Triggering)
+            for run_idx in range(1, NUM_REPEAT_TESTS + 1):
                 msg = f"{base_id}-{run_idx}"
-                log(f"   🔄 Run {run_idx}: {msg}")
+                log(f"   🔄 [Run {run_idx}/{NUM_REPEAT_TESTS}] Message: {msg}")
+                
+                # Select the first pod in alphabetical order to start the gossip
                 target_pod = pod_details[0][0] 
-                subprocess.run(f"kubectl exec {target_pod} -- python3 start.py --message {msg}", shell=True, check=True)
-                time.sleep(5)
-                test_summary.append({"test_id": msg, "topology": filename, "pods": P2P_TARGET, "timestamp": datetime.now(MYT).strftime('%H:%M:%S')})
+                
+                try:
+                    subprocess.run(f"kubectl exec {target_pod} -- python3 start.py --message {msg}", shell=True, check=True)
+                    log(f"      ⏳ Propagating for {EXPERIMENT_DURATION}s...")
+                    time.sleep(EXPERIMENT_DURATION + 2)
+                    
+                    test_summary.append({
+                        "test_id": msg,
+                        "topology": filename,
+                        "pods": expected_nodes,
+                        "timestamp": datetime.now(MYT).strftime('%H:%M:%S')
+                    })
+                except Exception as e:
+                    log(f"      ❌ Trigger Failed: {e}")
 
     finally:
         log("\n🧹 STARTING CLEANUP...")
