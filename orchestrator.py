@@ -32,7 +32,7 @@ K8SCLUSTER_NAME = args.cluster_name
 K8SNODE_COUNT = args.k8snodes
 P2P_TARGET = args.p2pnodes
 
-IMAGE_TAG = "v17"
+IMAGE_TAG = "v19"
 TOPOLOGY_FOLDER = "topology"
 HELM_CHART_FOLDER = "simcl2"
 MYT = timezone(timedelta(hours=8))
