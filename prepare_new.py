@@ -36,6 +36,51 @@ def get_pod_dplymt():
         return [(i, name, ip) for i, (name, ip) in enumerate(pods_data)]
     except Exception: return False
 
+def update_pod_db(pod_name, neighbors):
+    """Writes neighbor data to the pod's SQLite DB with internal retry logic."""
+    neighbors_json = json.dumps(neighbors)
+    
+    # We add a retry loop INSIDE the injected script
+    python_script = f"""
+import sqlite3, json, sys, time, random
+try:
+    values = json.loads('{neighbors_json.replace("'", "\\'")}')
+    success = False
+    for i in range(10): # Try up to 10 times
+        try:
+            with sqlite3.connect('ned.db', timeout=30) as conn:
+                conn.execute('PRAGMA journal_mode=WAL')
+                conn.execute('BEGIN IMMEDIATE TRANSACTION') # 'IMMEDIATE' helps prevent deadlocks
+                conn.execute('DROP TABLE IF EXISTS NEIGHBORS')
+                conn.execute('CREATE TABLE NEIGHBORS (pod_ip TEXT PRIMARY KEY, weight REAL)')
+                conn.executemany('INSERT INTO NEIGHBORS VALUES (?, ?)', values)
+                conn.commit()
+            success = True
+            break
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                time.sleep(random.uniform(0.1, 0.5))
+                continue
+            raise e
+    if success:
+        print(f"SUCCESS:{{len(values)}}")
+    else:
+        print("ERROR:Could not acquire lock after retries", file=sys.stderr)
+        sys.exit(1)
+except Exception as e:
+    print(f"ERROR:{{e}}", file=sys.stderr)
+    sys.exit(1)
+"""
+    cmd = ['kubectl', 'exec', pod_name, '--', 'python3', '-c', python_script]
+    try:
+        # Increased timeout for 500-node density
+        result = subprocess.run(cmd, check=True, text=True, capture_output=True, timeout=60)
+        return True, result.stdout.strip()
+    except Exception as e:
+        # Return the stderr so we can see the actual Python error
+        error_msg = getattr(e, 'stderr', str(e))
+        return False, error_msg
+
 def get_pod_mapping(pod_deployment, pod_neighbors, pod_topology):
     gossip_id_to_ip = {f'gossip-{index}': ip for index, _, ip in pod_deployment}
     edge_weights_lookup = {}
@@ -56,7 +101,7 @@ def get_pod_mapping(pod_deployment, pod_neighbors, pod_topology):
         result[deployment_name] = list_with_weights
     return result
 
-def update_pod_db(pod_name, neighbors):
+
     """Writes neighbor data directly to the pod's SQLite DB."""
     neighbors_json = json.dumps(neighbors)
     python_script = f"""
