@@ -20,7 +20,7 @@ from datetime import datetime, timezone, timedelta
 # ==========================================
 parser = argparse.ArgumentParser()
 parser.add_argument("--k8snodes", type=int, default=3)
-parser.add_argument("--image_tag", type=int, default=20)
+parser.add_argument("--image_tag", type=int, default=21)
 parser.add_argument("--zone", type=str, default="us-central1-c")
 parser.add_argument("--project_id", type=str, default="stoked-cosine-415611")
 parser.add_argument("--cluster_name", type=str, default="bcgossip-cluster")
