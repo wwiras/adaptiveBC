@@ -33,8 +33,18 @@ class Node(gossip_pb2_grpc.GossipServiceServicer):
                 self.susceptible_nodes = [(row[0], row[1]) for row in cursor]
                 conn.close()
                 print(f"Loaded {len(self.susceptible_nodes)} neighbors from DB.", flush=True)
+        # except Exception as e:
+            # print(f"Error in get_neighbors: {e}", flush=True)
+            
+            if not self.susceptible_nodes:
+                print("⚠️ Warning: NEIGHBORS table is empty!", flush=True)
+            else:
+                print(f"✅ Successfully loaded {len(self.susceptible_nodes)} neighbors.", flush=True)
+            
+        except sqlite3.OperationalError as e:
+            print(f"Update Error: {e}", flush=True) # Likely "no such table: NEIGHBORS"
         except Exception as e:
-            print(f"Error in get_neighbors: {e}", flush=True)
+            print(f"General Error in get_neighbors: {e}", flush=True)
 
     async def UpdateNeighbors(self, request, context):
         """ONE-STEP UPDATE: Updates memory, clears cache, and saves to DB."""
