@@ -9,7 +9,7 @@ import random
 
 # --- PHASE 0: ROBUST COMMAND EXECUTION ---
 def run_command_with_retry(cmd, timeout=60, retries=5):
-    """Handles GKE API Server 'Connection Refused' errors with backoff."""
+    """Handles GKE API Server 'Connection Refused' and network blips with backoff."""
     for attempt in range(retries):
         try:
             result = subprocess.run(
@@ -19,7 +19,6 @@ def run_command_with_retry(cmd, timeout=60, retries=5):
         except subprocess.CalledProcessError as e:
             err = e.stderr.strip().lower()
             if "connection to the server" in err or "refused" in err:
-                # API Server is saturated; sleep longer to let it recover
                 time.sleep(random.uniform(3.0, 7.0) * (attempt + 1))
             else:
                 time.sleep(1)
@@ -31,26 +30,36 @@ def run_command_with_retry(cmd, timeout=60, retries=5):
 
 def get_pod_topology(topology_folder, filename):
     path = os.path.join(os.getcwd(), topology_folder, filename)
-    if not os.path.exists(path): return False
-    with open(path) as f: return json.load(f)
+    if not os.path.exists(path): 
+        print(f"Error: File {path} not found.")
+        return False
+    with open(path) as f: 
+        return json.load(f)
 
 def get_pod_dplymt():
+    """Fetches pod names and IPs using label selector."""
     cmd = ['kubectl', 'get', 'pods', '-l', 'app=bcgossip', '-o', 'jsonpath={range .items[*]}{.metadata.name}{" "}{.status.podIP}{"\\n"}{end}']
     success, output = run_command_with_retry(cmd)
     if not success: return False
     pods = [line.split() for line in output.splitlines() if line]
-    pods.sort(key=lambda x: x[0])
+    pods.sort(key=lambda x: x[0]) 
     return [(i, name, ip) for i, (name, ip) in enumerate(pods)]
 
-def get_pod_mapping(pod_deployment, pod_topology):
+def get_pod_mapping(pod_deployment, pod_neighbors, pod_topology):
+    """Maps pod names to their neighbors with associated edge weights."""
     gossip_id_to_ip = {f'gossip-{index}': ip for index, _, ip in pod_deployment}
-    edge_weights = {tuple(sorted((str(e['source']), str(e['target'])))): e['weight'] for e in pod_topology['edges']}
     
-    neighbor_map = {node['id']: [] for node in pod_topology['nodes']}
+    edge_weights = {}
+    for e in pod_topology['edges']:
+        key = tuple(sorted((str(e['source']), str(e['target']))))
+        edge_weights[key] = e['weight']
+    
+    neighbor_map = {str(node['id']): [] for node in pod_topology['nodes']}
     for edge in pod_topology['edges']:
         s, t = str(edge['source']), str(edge['target'])
         neighbor_map[s].append(t)
-        if not pod_topology.get('directed', False): neighbor_map[t].append(s)
+        if not pod_topology.get('directed', False):
+            neighbor_map[t].append(s)
 
     mapping = {}
     for index, d_name, _ in pod_deployment:
@@ -66,14 +75,17 @@ def get_pod_mapping(pod_deployment, pod_topology):
 # --- PHASE 2: RESILIENT DB INJECTION ---
 
 def update_pod_db(pod_name, neighbors):
-    """Injected script handles internal SQLite retries and locking logic."""
+    """
+    Injected script handles internal SQLite retries and locking logic.
+    Strictly uses standard libraries (sqlite3, json) to avoid gRPC dependency errors.
+    """
     neighbors_json = json.dumps(neighbors)
     python_script = f"""
 import sqlite3, json, sys, time, random
 try:
     values = json.loads('{neighbors_json.replace("'", "\\'")}')
     success = False
-    for i in range(10):
+    for i in range(10): # Internal SQLite retry loop
         try:
             with sqlite3.connect('ned.db', timeout=30) as conn:
                 conn.execute('PRAGMA journal_mode=WAL')
@@ -89,8 +101,10 @@ try:
                 time.sleep(random.uniform(0.2, 0.8))
                 continue
             raise e
-    if success: print(f"SUCCESS:{{len(values)}}")
-    else: sys.exit(1)
+    if success: 
+        print(f"SUCCESS:{{len(values)}}")
+    else: 
+        sys.exit(1)
 except Exception as e:
     print(f"ERROR:{{e}}", file=sys.stderr)
     sys.exit(1)
@@ -98,26 +112,28 @@ except Exception as e:
     cmd = ['kubectl', 'exec', pod_name, '--', 'python3', '-c', python_script]
     return run_command_with_retry(cmd)
 
-def update_all_pods(pod_mapping, max_concurrent=25): # Reduced for stability
+def update_all_pods(pod_mapping, max_concurrent=25):
     pod_list = list(pod_mapping.keys())
     total_pods = len(pod_list)
     start_time = time.time()
     success_count = 0
 
-    print(f"\n[Resilient Update] Injecting into {total_pods} pods (Concurrency: {max_concurrent})...", flush=True)
+    print(f"\n[Resilient Update] Injecting into {total_pods} pods...", flush=True)
 
     with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
         futures = {executor.submit(update_pod_db, p, pod_mapping[p]): p for p in pod_list}
         for i, future in enumerate(as_completed(futures), 1):
             success, output = future.result()
-            if success: success_count += 1
-            else: print(f"\n  - Failed {futures[future]}: {output}")
+            if success: 
+                success_count += 1
+            else: 
+                print(f"\n  - Failed {futures[future]}: {output}")
+            
             print(f"\rProgress: {(i/total_pods)*100:.1f}% | Success: {success_count}/{total_pods}", end='', flush=True)
 
-    total_elapsed = time.time() - start_time
-    # This specific summary format is for the Orchestrator's Exploit logic
+    elapsed = time.time() - start_time
     print(f"\n\nOverall Summary - Total Pods: {total_pods}, DB Update Success: {success_count}, Notification Success: {success_count}")
-    print(f"Injection completed in {total_elapsed:.1f}s")
+    print(f"Total Injection Time: {elapsed:.1f}s")
     return success_count == total_pods
 
 # --- MAIN ---
@@ -128,10 +144,14 @@ if __name__ == "__main__":
     parser.add_argument("--topology_folder", default="topology")
     args = parser.parse_args()
 
-    topo = get_pod_topology(args.topology_folder, args.filename)
-    if topo:
+    pod_topology = get_pod_topology(args.topology_folder, args.filename)
+    if pod_topology:
         dplymt = get_pod_dplymt()
-        if dplymt and len(topo['nodes']) == len(dplymt):
-            mapping = get_pod_mapping(dplymt, topo)
+        if dplymt and len(pod_topology['nodes']) == len(dplymt):
+            pod_neighbors = get_pod_neighbors(pod_topology)
+            mapping = get_pod_mapping(dplymt, pod_neighbors, pod_topology)
             if update_all_pods(mapping):
                 print("Platform is now ready for testing..!", flush=True)
+        else:
+            deploy_count = len(dplymt) if dplymt else 0
+            print(f"Error: Size mismatch. Topology: {len(pod_topology['nodes'])}, Pods: {deploy_count}")
