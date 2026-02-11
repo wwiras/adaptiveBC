@@ -127,7 +127,7 @@ except Exception as e:
     except Exception as e:
         return False, str(e)
 
-def update_all_pods(pod_mapping, max_concurrent=50):
+def update_all_pods(pod_mapping, max_concurrent=20):
     pod_list = list(pod_mapping.keys())
     total_pods = len(pod_list)
     start_time = time.time()
