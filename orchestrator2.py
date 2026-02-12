@@ -25,7 +25,7 @@ ZONE = args.zone
 K8SCLUSTER_NAME = args.cluster_name
 K8SNODE_COUNT = args.k8snodes
 
-IMAGE_TAG = "v19"
+IMAGE_TAG = "v22"
 TOPOLOGY_FOLDER = "topology"
 HELM_CHART_FOLDER = "simcl2"
 REMOTE_PROJECT_DIR = "~/adaptiveBCproj/adaptiveBC" # Path in Cloud Shell
@@ -194,8 +194,8 @@ def main():
         log("🧹 FINAL CLEANUP")
         log("="*60)
         try:
-            log("🚮 Cleaning Cloud Shell storage...")
-            subprocess.run(f"gcloud cloud-shell ssh --command='rm -f {REMOTE_PROJECT_DIR}/topology/*.json'", shell=True, capture_output=True)
+            # log("🚮 Cleaning Cloud Shell storage...")
+            # subprocess.run(f"gcloud cloud-shell ssh --command='rm -f {REMOTE_PROJECT_DIR}/topology/*.json'", shell=True, capture_output=True)
             
             log("🚮 Uninstalling Helm release...")
             subprocess.run(["helm", "uninstall", "simcn"], capture_output=True)
